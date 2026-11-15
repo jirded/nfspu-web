@@ -22,6 +22,7 @@ static int g_log = -1;
 
 /* ------------------------------------------------------------------ state */
 static GlState g_st;
+uint32_t glide_state_serial = 1;        /* glide.h */
 static int g_w = 640, g_h = 480, g_origin_ll = 0, g_open = 0;
 static uint32_t g_cformat = 0;          /* GR_COLORFORMAT_ARGB */
 static int g_coord_space = 0;           /* GR_WINDOW_COORDS */
@@ -164,6 +165,11 @@ static int tex_current(void){
     return id;
 }
 
+/* tex_current()'s answer for as long as only draws are called (glide_call_id); -1: ask again.  Asking walks
+ * the texture's pages and the cache of decoded ones: too much for each of a frame's thousands of triangles. */
+static int g_tex_now = -1;
+static int tex_now(void){ if (g_tex_now < 0) g_tex_now = tex_current(); return g_tex_now; }
+
 /* ---------------------------------------------------------------- vertices */
 static void fetch(uint32_t p, GlVert *v){
     memset(v, 0, sizeof *v);
@@ -193,7 +199,7 @@ static int culled(const GlVert *a, const GlVert *b, const GlVert *c){
     return g_cull == 1 ? area < 0.f : area > 0.f;
 }
 static void draw_tri(uint32_t pa, uint32_t pb, uint32_t pc){
-    g_st.tex = tex_current();
+    g_st.tex = tex_now();
     GlVert v[3]; fetch(pa, &v[0]); fetch(pb, &v[1]); fetch(pc, &v[2]);
     if (culled(&v[0], &v[1], &v[2])) return;
     glb_tris(&g_st, v, 1); g_tris++;
@@ -234,20 +240,59 @@ static void res_dims(uint32_t res, int *w, int *h){
     if (res < 16 && g_mode_size[res][0]){ *w = g_mode_size[res][0]; *h = g_mode_size[res][1]; }
 }
 
-int glide_call(CPU *c, const char *name, uint32_t *out){
-    if (g_log < 0){ const char *e = getenv("GLIDE_LOG"); g_log = e && *e && *e != '0'; }
+/* The calls by number.  A race makes 95,000 grDrawTriangle and some 40,000 state calls a second: an import is
+ * looked up by its name once (glide_id; porsche_win32.c keeps the answer for each import) and called by its
+ * number after that (glide_call_id). */
+enum {
+    G_grGlideInit, G_grGlideShutdown, G_grSstSelect, G_grErrorSetCallback, G_grFinish, G_grDitherMode,
+    G_grEnable, G_grDisable, G_grTexLodBiasValue, G_grTexMipMapMode, G_grSstWinOpen, G_grSstWinClose,
+    G_guGammaCorrectionRGB, G_grQueryResolutions, G_grGet, G_grGetString, G_grCoordinateSpace, G_grVertexLayout,
+    G_grColorCombine, G_grAlphaCombine, G_grTexCombine, G_grAlphaBlendFunction, G_grAlphaTestFunction, G_grAlphaTestReferenceValue,
+    G_grDepthBufferMode, G_grDepthBufferFunction, G_grDepthMask, G_grDepthBiasLevel, G_grCullMode, G_grConstantColorValue,
+    G_grChromakeyMode, G_grChromakeyValue, G_grColorMask, G_grFogMode, G_grFogColorValue, G_grFogTable,
+    G_grClipWindow, G_grTexFilterMode, G_grTexClampMode, G_grTexMinAddress, G_grTexMaxAddress, G_grTexCalcMemRequired,
+    G_grTexSource, G_grTexDownloadMipMap, G_grTexDownloadMipMapLevelPartial, G_grTexDownloadTable, G_grBufferClear, G_grBufferSwap,
+    G_grRenderBuffer, G_grDrawTriangle, G_grAADrawTriangle, G_grDrawLine, G_grDrawPoint, G_grLfbLock,
+    G_grLfbUnlock, G_grLfbReadRegion, G_grLfbWriteRegion,
+    G_COUNT
+};
+static const char *const g_names[G_COUNT] = {
+    "grGlideInit", "grGlideShutdown", "grSstSelect", "grErrorSetCallback", "grFinish", "grDitherMode",
+    "grEnable", "grDisable", "grTexLodBiasValue", "grTexMipMapMode", "grSstWinOpen", "grSstWinClose",
+    "guGammaCorrectionRGB", "grQueryResolutions", "grGet", "grGetString", "grCoordinateSpace", "grVertexLayout",
+    "grColorCombine", "grAlphaCombine", "grTexCombine", "grAlphaBlendFunction", "grAlphaTestFunction", "grAlphaTestReferenceValue",
+    "grDepthBufferMode", "grDepthBufferFunction", "grDepthMask", "grDepthBiasLevel", "grCullMode", "grConstantColorValue",
+    "grChromakeyMode", "grChromakeyValue", "grColorMask", "grFogMode", "grFogColorValue", "grFogTable",
+    "grClipWindow", "grTexFilterMode", "grTexClampMode", "grTexMinAddress", "grTexMaxAddress", "grTexCalcMemRequired",
+    "grTexSource", "grTexDownloadMipMap", "grTexDownloadMipMapLevelPartial", "grTexDownloadTable", "grBufferClear", "grBufferSwap",
+    "grRenderBuffer", "grDrawTriangle", "grAADrawTriangle", "grDrawLine", "grDrawPoint", "grLfbLock",
+    "grLfbUnlock", "grLfbReadRegion", "grLfbWriteRegion",
+};
+/* the number of a call, by the name glide3x.dll exports it under (_grDrawTriangle@12) or the bare one; -1: none */
+int glide_id(const char *name){
     char n[64]; const char *p = name[0] == '_' ? name + 1 : name; size_t k = 0;
     for (; p[k] && p[k] != '@' && k < sizeof n - 1; k++) n[k] = p[k];
     n[k] = 0;
-    uint32_t r = 0; g_calls++;
+    for (int i = 0; i < G_COUNT; i++) if (!strcmp(n, g_names[i])) return i;
+    return -1;
+}
+int glide_call_id(CPU *c, int id, uint32_t *out){
+    g_calls++;
+    if (id == G_grDrawTriangle){ draw_tri(A(c, 0), A(c, 1), A(c, 2)); *out = 0; return 1; }   /* nine calls in ten */
+    if (g_log < 0){ const char *e = getenv("GLIDE_LOG"); g_log = e && *e && *e != '0'; }
+    const char *n = g_names[id];
+    uint32_t r = 0;
+    /* anything but a draw may change what the next draw needs: its texture is looked up again (tex_now) and its
+     * state counts as new (glide_state_serial) */
+    if (id != G_grAADrawTriangle && id != G_grDrawLine && id != G_grDrawPoint){ g_tex_now = -1; glide_state_serial++; }
 
-    if (!strcmp(n, "grGlideInit") || !strcmp(n, "grGlideShutdown") || !strcmp(n, "grSstSelect")
-        || !strcmp(n, "grErrorSetCallback") || !strcmp(n, "grFinish") || !strcmp(n, "grDitherMode")
-        || !strcmp(n, "grEnable") || !strcmp(n, "grDisable") || !strcmp(n, "grTexLodBiasValue")
-        || !strcmp(n, "grTexMipMapMode")){
+    if (id == G_grGlideInit || id == G_grGlideShutdown || id == G_grSstSelect
+        || id == G_grErrorSetCallback || id == G_grFinish || id == G_grDitherMode
+        || id == G_grEnable || id == G_grDisable || id == G_grTexLodBiasValue
+        || id == G_grTexMipMapMode){
         GLOG("%s(0x%x)\n", n, A(c, 0));
     }
-    else if (!strcmp(n, "grSstWinOpen")){
+    else if (id == G_grSstWinOpen){
         /* (hWnd, resolution, refresh, cformat, origin, ncolor, naux) */
         res_dims(A(c, 1), &g_w, &g_h);
         g_cformat = A(c, 3); g_origin_ll = A(c, 4) == 1;
@@ -258,11 +303,11 @@ int glide_call(CPU *c, const char *name, uint32_t *out){
                 g_w, g_h, g_cformat, g_origin_ll ? "lower left" : "upper left", A(c, 5), A(c, 6));
         r = 1;
     }
-    else if (!strcmp(n, "grSstWinClose")){ g_open = 0; r = 1; }
-    else if (!strcmp(n, "guGammaCorrectionRGB")){
+    else if (id == G_grSstWinClose){ g_open = 0; r = 1; }
+    else if (id == G_guGammaCorrectionRGB){
         GLOG("guGammaCorrectionRGB(%.2f, %.2f, %.2f)\n", AF(c, 0), AF(c, 1), AF(c, 2));   /* the display's gamma: not applied */
     }
-    else if (!strcmp(n, "grQueryResolutions")){
+    else if (id == G_grQueryResolutions){
         /* (const GrResolution *template, GrResolution *out): {res, refresh, ncolor, naux} */
         uint32_t t = A(c, 0), o = A(c, 1), cnt = 0;
         for (uint32_t id = 0; id < 16; id++){
@@ -273,7 +318,7 @@ int glide_call(CPU *c, const char *name, uint32_t *out){
         }
         r = cnt * 16u;
     }
-    else if (!strcmp(n, "grGet")){
+    else if (id == G_grGet){
         /* (pname, plength, FxI32 *params) -> bytes written */
         uint32_t pn = A(c, 0), len = A(c, 1), pp = A(c, 2);
         int32_t v[4] = {0}; int nv = 1;
@@ -309,15 +354,15 @@ int glide_call(CPU *c, const char *name, uint32_t *out){
         if (pp && len >= 4u * (uint32_t)nv){ for (int i = 0; i < nv; i++) MR32(pp + 4u*i) = (uint32_t)v[i]; r = 4u * (uint32_t)nv; }
         GLOG("grGet(0x%x) -> %d\n", pn, v[0]);
     }
-    else if (!strcmp(n, "grGetString")){
+    else if (id == G_grGetString){
         static uint32_t s[5];
         uint32_t pn = A(c, 0); int i = pn >= 0xa0 && pn <= 0xa4 ? (int)(pn - 0xa0) : 0;
         static const char *txt[5] = { "", "Voodoo2", "Glide", "3Dfx Interactive", "3.10" };
         if (!s[i]) s[i] = guest_str(txt[i]);
         r = s[i];
     }
-    else if (!strcmp(n, "grCoordinateSpace")) g_coord_space = (int)A(c, 0);
-    else if (!strcmp(n, "grVertexLayout")){
+    else if (id == G_grCoordinateSpace) g_coord_space = (int)A(c, 0);
+    else if (id == G_grVertexLayout){
         /* (param, offset, mode) */
         uint32_t pa = A(c, 0); int off = A(c, 2) ? (int)A(c, 1) : -1, i = -1;
         switch (pa){ case 0x01: i = P_XY; break; case 0x02: i = P_Z; break; case 0x03: i = P_W; break; case 0x04: i = P_Q; break;
@@ -326,34 +371,34 @@ int glide_call(CPU *c, const char *name, uint32_t *out){
         if (i >= 0) g_off[i] = off;
         GLOG("grVertexLayout(0x%x, %d, %u)\n", pa, (int)A(c, 1), A(c, 2));
     }
-    else if (!strcmp(n, "grColorCombine")){ g_st.cc_func = (uint8_t)A(c,0); g_st.cc_factor = (uint8_t)A(c,1); g_st.cc_local = (uint8_t)A(c,2); g_st.cc_other = (uint8_t)A(c,3); g_st.cc_invert = (uint8_t)A(c,4); }
-    else if (!strcmp(n, "grAlphaCombine")){ g_st.ac_func = (uint8_t)A(c,0); g_st.ac_factor = (uint8_t)A(c,1); g_st.ac_local = (uint8_t)A(c,2); g_st.ac_other = (uint8_t)A(c,3); g_st.ac_invert = (uint8_t)A(c,4); }
-    else if (!strcmp(n, "grTexCombine")){
+    else if (id == G_grColorCombine){ g_st.cc_func = (uint8_t)A(c,0); g_st.cc_factor = (uint8_t)A(c,1); g_st.cc_local = (uint8_t)A(c,2); g_st.cc_other = (uint8_t)A(c,3); g_st.cc_invert = (uint8_t)A(c,4); }
+    else if (id == G_grAlphaCombine){ g_st.ac_func = (uint8_t)A(c,0); g_st.ac_factor = (uint8_t)A(c,1); g_st.ac_local = (uint8_t)A(c,2); g_st.ac_other = (uint8_t)A(c,3); g_st.ac_invert = (uint8_t)A(c,4); }
+    else if (id == G_grTexCombine){
         if (A(c, 0) == 0){ g_st.tc_rgb_func = (uint8_t)A(c,1); g_st.tc_rgb_factor = (uint8_t)A(c,2); g_st.tc_a_func = (uint8_t)A(c,3);
                            g_st.tc_a_factor = (uint8_t)A(c,4); g_st.tc_rgb_invert = (uint8_t)A(c,5); g_st.tc_a_invert = (uint8_t)A(c,6); } }
-    else if (!strcmp(n, "grAlphaBlendFunction")){ g_st.blend_rgb_src = (uint8_t)A(c,0); g_st.blend_rgb_dst = (uint8_t)A(c,1); g_st.blend_a_src = (uint8_t)A(c,2); g_st.blend_a_dst = (uint8_t)A(c,3); }
-    else if (!strcmp(n, "grAlphaTestFunction")) g_st.alpha_func = (uint8_t)A(c, 0);
-    else if (!strcmp(n, "grAlphaTestReferenceValue")) g_st.alpha_ref = (uint8_t)A(c, 0);
-    else if (!strcmp(n, "grDepthBufferMode")) g_st.depth_mode = (uint8_t)A(c, 0);
-    else if (!strcmp(n, "grDepthBufferFunction")) g_st.depth_func = (uint8_t)A(c, 0);
-    else if (!strcmp(n, "grDepthMask")) g_st.depth_mask = (uint8_t)(A(c, 0) != 0);
-    else if (!strcmp(n, "grDepthBiasLevel")) g_st.depth_bias = (int16_t)A(c, 0);
-    else if (!strcmp(n, "grCullMode")) g_cull = (int)A(c, 0);
-    else if (!strcmp(n, "grConstantColorValue")) g_st.constant_color = to_argb(A(c, 0));
-    else if (!strcmp(n, "grChromakeyMode")) g_st.chroma_on = (uint8_t)(A(c, 0) != 0);
-    else if (!strcmp(n, "grChromakeyValue")) g_st.chroma_color = to_argb(A(c, 0)) & 0xffffffu;
-    else if (!strcmp(n, "grColorMask")){ g_st.mask_rgb = (uint8_t)(A(c, 0) != 0); g_st.mask_a = (uint8_t)(A(c, 1) != 0); }
-    else if (!strcmp(n, "grFogMode")) g_st.fog_mode = (uint8_t)(A(c, 0) & 0xff);
-    else if (!strcmp(n, "grFogColorValue")) g_st.fog_color = to_argb(A(c, 0));
-    else if (!strcmp(n, "grFogTable")){ uint32_t t = A(c, 0); if (t) for (int i = 0; i < 64; i++) g_st.fog_table[i] = MR8(t + (uint32_t)i); }
-    else if (!strcmp(n, "grClipWindow")){ g_st.clip_x0 = (int)A(c,0); g_st.clip_y0 = (int)A(c,1); g_st.clip_x1 = (int)A(c,2); g_st.clip_y1 = (int)A(c,3);
+    else if (id == G_grAlphaBlendFunction){ g_st.blend_rgb_src = (uint8_t)A(c,0); g_st.blend_rgb_dst = (uint8_t)A(c,1); g_st.blend_a_src = (uint8_t)A(c,2); g_st.blend_a_dst = (uint8_t)A(c,3); }
+    else if (id == G_grAlphaTestFunction) g_st.alpha_func = (uint8_t)A(c, 0);
+    else if (id == G_grAlphaTestReferenceValue) g_st.alpha_ref = (uint8_t)A(c, 0);
+    else if (id == G_grDepthBufferMode) g_st.depth_mode = (uint8_t)A(c, 0);
+    else if (id == G_grDepthBufferFunction) g_st.depth_func = (uint8_t)A(c, 0);
+    else if (id == G_grDepthMask) g_st.depth_mask = (uint8_t)(A(c, 0) != 0);
+    else if (id == G_grDepthBiasLevel) g_st.depth_bias = (int16_t)A(c, 0);
+    else if (id == G_grCullMode) g_cull = (int)A(c, 0);
+    else if (id == G_grConstantColorValue) g_st.constant_color = to_argb(A(c, 0));
+    else if (id == G_grChromakeyMode) g_st.chroma_on = (uint8_t)(A(c, 0) != 0);
+    else if (id == G_grChromakeyValue) g_st.chroma_color = to_argb(A(c, 0)) & 0xffffffu;
+    else if (id == G_grColorMask){ g_st.mask_rgb = (uint8_t)(A(c, 0) != 0); g_st.mask_a = (uint8_t)(A(c, 1) != 0); }
+    else if (id == G_grFogMode) g_st.fog_mode = (uint8_t)(A(c, 0) & 0xff);
+    else if (id == G_grFogColorValue) g_st.fog_color = to_argb(A(c, 0));
+    else if (id == G_grFogTable){ uint32_t t = A(c, 0); if (t) for (int i = 0; i < 64; i++) g_st.fog_table[i] = MR8(t + (uint32_t)i); }
+    else if (id == G_grClipWindow){ g_st.clip_x0 = (int)A(c,0); g_st.clip_y0 = (int)A(c,1); g_st.clip_x1 = (int)A(c,2); g_st.clip_y1 = (int)A(c,3);
         if (g_origin_ll){ int y0 = g_h - g_st.clip_y1, y1 = g_h - g_st.clip_y0; g_st.clip_y0 = y0; g_st.clip_y1 = y1; } }
-    else if (!strcmp(n, "grTexFilterMode")){ if (A(c,0) == 0){ g_st.tex_filter_min = (uint8_t)A(c,1); g_st.tex_filter_mag = (uint8_t)A(c,2); } }
-    else if (!strcmp(n, "grTexClampMode")){ if (A(c,0) == 0){ g_st.tex_clamp_s = (uint8_t)A(c,1); g_st.tex_clamp_t = (uint8_t)A(c,2); } }
-    else if (!strcmp(n, "grTexMinAddress")) r = 0;
-    else if (!strcmp(n, "grTexMaxAddress")) r = TMU_MEM - 8u;
-    else if (!strcmp(n, "grTexCalcMemRequired")) r = mip_bytes((int)A(c,0), (int)A(c,1), (int)A(c,2), (int)A(c,3));
-    else if (!strcmp(n, "grTexSource")){
+    else if (id == G_grTexFilterMode){ if (A(c,0) == 0){ g_st.tex_filter_min = (uint8_t)A(c,1); g_st.tex_filter_mag = (uint8_t)A(c,2); } }
+    else if (id == G_grTexClampMode){ if (A(c,0) == 0){ g_st.tex_clamp_s = (uint8_t)A(c,1); g_st.tex_clamp_t = (uint8_t)A(c,2); } }
+    else if (id == G_grTexMinAddress) r = 0;
+    else if (id == G_grTexMaxAddress) r = TMU_MEM - 8u;
+    else if (id == G_grTexCalcMemRequired) r = mip_bytes((int)A(c,0), (int)A(c,1), (int)A(c,2), (int)A(c,3));
+    else if (id == G_grTexSource){
         /* (tmu, start, evenOdd, GrTexInfo *{small, large, aspect, format, data}) */
         uint32_t ti = A(c, 3);
         if (A(c, 0) == 0 && ti){
@@ -361,12 +406,12 @@ int glide_call(CPU *c, const char *name, uint32_t *out){
             lod_dims(g_src.large, g_src.aspect, &g_tex_w, &g_tex_h);
         }
     }
-    else if (!strcmp(n, "grTexDownloadMipMap")){
+    else if (id == G_grTexDownloadMipMap){
         uint32_t ti = A(c, 3);
         if (ti){ int sm = (int)MR32(ti), lg = (int)MR32(ti + 4), as = (int)MR32(ti + 8), fm = (int)MR32(ti + 12); uint32_t data = MR32(ti + 16);
                  if (data) tmu_write(A(c, 1), data, level_offset(sm - 1, lg, as, fm)); }
     }
-    else if (!strcmp(n, "grTexDownloadMipMapLevelPartial")){
+    else if (id == G_grTexDownloadMipMapLevelPartial){
         /* (tmu, start, thisLod, largeLod, aspect, format, evenOdd, data, first_row, last_row) */
         int lod = (int)A(c,2), lg = (int)A(c,3), as = (int)A(c,4), fm = (int)A(c,5);
         uint32_t data = A(c,7); int r0 = (int)A(c,8), r1 = (int)A(c,9);
@@ -376,7 +421,7 @@ int glide_call(CPU *c, const char *name, uint32_t *out){
             tmu_write(A(c,1) + level_offset(lod, lg, as, fm) + (uint32_t)r0 * row, data, (uint32_t)(r1 - r0 + 1) * row);
         if (r0 > 0) GLOG("partial download rows %d..%d of lod %d\n", r0, r1, lod);
     }
-    else if (!strcmp(n, "grTexDownloadTable")){
+    else if (id == G_grTexDownloadTable){
         uint32_t ty = A(c, 0), d = A(c, 1);
         if (d && (ty == 2 || ty == 3)){
             for (int i = 0; i < 256; i++){
@@ -390,11 +435,11 @@ int glide_call(CPU *c, const char *name, uint32_t *out){
             g_pal_gen++;
         }
     }
-    else if (!strcmp(n, "grBufferClear")){
+    else if (id == G_grBufferClear){
         /* (color, alpha, depth) */
         glb_clear(&g_st, to_argb(A(c, 0)), (uint8_t)A(c, 1), A(c, 2));
     }
-    else if (!strcmp(n, "grBufferSwap")){
+    else if (id == G_grBufferSwap){
         /* the stall watchdog (watchdog.c) counts presents: no frame for a while, a report of every guest thread */
         { void watchdog_on_present(void); watchdog_on_present(); }
         glb_step(MR32(0x6559ecu));   /* the game's own clock, 64 ticks a second (0x4A45D0): a race's world moves by it */
@@ -408,14 +453,14 @@ int glide_call(CPU *c, const char *name, uint32_t *out){
         { void vclock_tick(void); vclock_tick(); }
         if (g_log || (g_frames % 300) == 1) fprintf(stderr, "[glide] frame %llu: %llu triangles so far, %llu texture decodes\n",
             (unsigned long long)g_frames, (unsigned long long)g_tris, (unsigned long long)g_tex_decodes); }
-    else if (!strcmp(n, "grRenderBuffer")){ GLOG("grRenderBuffer(%u)\n", A(c, 0)); }
-    else if (!strcmp(n, "grDrawTriangle")) draw_tri(A(c, 0), A(c, 1), A(c, 2));
-    else if (!strcmp(n, "grAADrawTriangle")) draw_tri(A(c, 0), A(c, 1), A(c, 2));
-    else if (!strcmp(n, "grDrawLine")){
-        GlVert v[2]; g_st.tex = tex_current(); fetch(A(c, 0), &v[0]); fetch(A(c, 1), &v[1]); glb_lines(&g_st, v, 1); }
-    else if (!strcmp(n, "grDrawPoint")){
-        GlVert v; g_st.tex = tex_current(); fetch(A(c, 0), &v); glb_points(&g_st, &v, 1); }
-    else if (!strcmp(n, "grLfbLock")){
+    else if (id == G_grRenderBuffer){ GLOG("grRenderBuffer(%u)\n", A(c, 0)); }
+    else if (id == G_grDrawTriangle) draw_tri(A(c, 0), A(c, 1), A(c, 2));
+    else if (id == G_grAADrawTriangle) draw_tri(A(c, 0), A(c, 1), A(c, 2));
+    else if (id == G_grDrawLine){
+        GlVert v[2]; g_st.tex = tex_now(); fetch(A(c, 0), &v[0]); fetch(A(c, 1), &v[1]); glb_lines(&g_st, v, 1); }
+    else if (id == G_grDrawPoint){
+        GlVert v; g_st.tex = tex_now(); fetch(A(c, 0), &v); glb_points(&g_st, &v, 1); }
+    else if (id == G_grLfbLock){
         /* (type, buffer, writeMode, origin, pixelPipeline, GrLfbInfo_t *{size, lfbPtr, stride, writeMode, origin}) */
         uint32_t type = A(c, 0) & 1u, buf = A(c, 1), wm = A(c, 2), info = A(c, 5);
         if (buf > 1 || !info){ r = 0; }
@@ -439,7 +484,7 @@ int glide_call(CPU *c, const char *name, uint32_t *out){
         }
         GLOG("grLfbLock(type %u, buffer %u, mode 0x%x) -> %u\n", A(c, 0), buf, wm, r);
     }
-    else if (!strcmp(n, "grLfbUnlock")){
+    else if (id == G_grLfbUnlock){
         GLOG("grLfbUnlock(type %u, buffer %u)\n", A(c, 0), A(c, 1));
         if (g_lfb_locked_write && g_lfb_guest){
             uint32_t *px = tmp_px((size_t)g_w * g_h);
@@ -461,14 +506,14 @@ int glide_call(CPU *c, const char *name, uint32_t *out){
         }
         g_lfb_locked_write = 0; r = 1;
     }
-    else if (!strcmp(n, "grLfbReadRegion")){
+    else if (id == G_grLfbReadRegion){
         /* (src_buffer, x, y, w, h, dst_stride, dst) -> 565 */
         int x = (int)A(c,1), y = (int)A(c,2), w = (int)A(c,3), h = (int)A(c,4); uint32_t st = A(c,5), d = A(c,6);
         if (w > 0 && h > 0 && d){ uint32_t *px = tmp_px((size_t)w * h); glb_read_rgb(x, y, w, h, px, w);
             for (int j = 0; j < h; j++) for (int i = 0; i < w; i++) MR16(d + (uint32_t)j*st + 2u*(uint32_t)i) = to565(px[j*w + i]); }
         r = 1;
     }
-    else if (!strcmp(n, "grLfbWriteRegion")){
+    else if (id == G_grLfbWriteRegion){
         /* (dst_buffer, x, y, src_format, w, h, pixelPipeline, src_stride, src) */
         int x = (int)A(c,1), y = (int)A(c,2), fmt = (int)A(c,3), w = (int)A(c,4), h = (int)A(c,5);
         uint32_t st = A(c,7), s = A(c,8);
@@ -483,14 +528,19 @@ int glide_call(CPU *c, const char *name, uint32_t *out){
         }
         r = 1;
     }
-    else {
+    else { *out = 0; return 1; }
+    *out = r;
+    return 1;
+}
+int glide_call(CPU *c, const char *name, uint32_t *out){
+    int id = glide_id(name);
+    if (id < 0){
         g_unknown++;
         fprintf(stderr, "[glide] %s: not implemented\n", name);
         *out = 0;
         return 1;   /* handled: returns 0 */
     }
-    *out = r;
-    return 1;
+    return glide_call_id(c, id, out);
 }
 
 /* The renderer's frame count: the mouse goes to the game one change a frame

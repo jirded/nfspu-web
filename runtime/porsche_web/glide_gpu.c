@@ -96,13 +96,19 @@ static void pack_state(const GlState *s, uint32_t *o){
 static void prims(const GlState *s, const GlVert *v, int nv, uint32_t prim){
     ensure_init();
     if (PG_VERT_OFF + 4u * PG_VERT_FLOATS * (g_nvert + (uint32_t)nv) > PG_SLOT_BYTES){ g_overflow++; return; }
-    uint32_t st[S_COUNT]; pack_state(s, st);
-    if (!(g_last_draw && g_last_draw[0] == prim && !memcmp(g_last_draw + 3, st, sizeof st))){
-        uint32_t *d = cmd(PG_OP_DRAW, 3 + S_COUNT);
-        if (!d) return;
-        d[0] = prim; d[1] = g_nvert; d[2] = 0;
-        memcpy(d + 3, st, sizeof st);
-        g_last_draw = d;
+    /* the draw before had this very state (glide.h glide_state_serial): its command takes these vertices too.
+     * Otherwise the state is packed and compared, and a new command begins when it differs. */
+    static uint32_t serial;
+    if (!(g_last_draw && g_last_draw[0] == prim && serial == glide_state_serial)){
+        uint32_t st[S_COUNT]; pack_state(s, st);
+        if (!(g_last_draw && g_last_draw[0] == prim && !memcmp(g_last_draw + 3, st, sizeof st))){
+            uint32_t *d = cmd(PG_OP_DRAW, 3 + S_COUNT);
+            if (!d) return;
+            d[0] = prim; d[1] = g_nvert; d[2] = 0;
+            memcpy(d + 3, st, sizeof st);
+            g_last_draw = d;
+        }
+        serial = glide_state_serial;
     }
     float *o = (float *)(P + PG_VERT_OFF) + (size_t)g_nvert * PG_VERT_FLOATS;
     for (int i = 0; i < nv; i++, o += PG_VERT_FLOATS){
@@ -214,9 +220,11 @@ void glb_swap(void){
     /* how long the game took to make this frame (from the end of the swap before to this one), for the log; a
      * frame after a stall does not count */
     static double work_from, work_sum, work_max; static int work_n;
+    static uint16_t work_hist[400];                               /* 0.1 ms a bucket, to 40 ms */
     if (work_from > 0){
         double wk = t0 - work_from;
-        if (wk < 250.0){ work_sum += wk; work_n++; if (wk > work_max) work_max = wk; }
+        if (wk < 250.0){ work_sum += wk; work_n++; if (wk > work_max) work_max = wk;
+                         int b = (int)(wk * 10.0); work_hist[b < 399 ? b : 399]++; }
     }
     /* the page must see every frame (textures are uploaded once): at the start, wait for it to attach */
     static int waited_attach;
@@ -243,9 +251,14 @@ void glb_swap(void){
     if (g_frames % 600 == 1){
         fprintf(stderr, "[glide-gpu] frame %d: %u commands, %u vertices; waited for the page %llu times, %.0f ms in all; %llu overflows, %d pixel buffers pending\n",
                 (int)hd->frame, hd->ncmd, hd->nvert, (unsigned long long)g_waits, g_wait_ms, (unsigned long long)g_overflow, g_npend);
-        if (work_n) fprintf(stderr, "[glide-gpu] the game's work a frame: %.1f ms on average, %.1f at most%s\n",
-                            work_sum / work_n, work_max, ald(&g_ctl.racing) ? " (a race)" : "");
-        work_sum = work_max = 0; work_n = 0;
+        if (work_n){
+            /* the middle frame says more than the average: a frame the system held back counts once, not by its length */
+            int half = 0, mid = 0;
+            for (; mid < 400 && half + work_hist[mid] <= work_n / 2; mid++) half += work_hist[mid];
+            fprintf(stderr, "[glide-gpu] the game's work a frame: %.1f ms the middle one, %.1f on average, %.1f at most%s\n",
+                    mid / 10.0, work_sum / work_n, work_max, ald(&g_ctl.racing) ? " (a race)" : "");
+        }
+        work_sum = work_max = 0; work_n = 0; memset(work_hist, 0, sizeof work_hist);
     }
     work_from = now_ms();
 }

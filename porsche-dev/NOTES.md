@@ -58,7 +58,8 @@ WSL Ubuntu-24.04 (user jd) as /mnt/c/Development/NFSPU:
   9e PORSCHE_PROF=1 import wall-time profile | 9f GetAsyncKeyState + mouse buttons |
   9g key/button release waits 2 frames after its press | 9h fileio_resolve_write |
   9i virtual clock at real speed in long stalls | 9j release stuck modifiers (Alt) |
-  9k DeleteFileA of a file that is only in the read-only game folder succeeds.
+  9k DeleteFileA of a file that is only in the read-only game folder succeeds |
+  9l the calls a race makes by the tens of thousands a second go by the import's number (porsche_fast_call).
 - web-porsche/ -> repo web-porsche/ (webpage.sh copies and builds): the start page (2026-11-15; design and plan in
   specs/2026-11-15-start-page-*.md).  index.html + style.css (the "garage" look, all CSS, no images);
   src/main.ts = the shell (boot, checks, the one-tab lock, start page <-> game, the page's keys, URL options
@@ -236,7 +237,36 @@ WSL Ubuntu-24.04 (user jd) as /mnt/c/Development/NFSPU:
     as good as this game gets. In heavier parts of the track the game needs 18-19 ms: 51-56 frames a second,
     14-26% of them two ticks. What is left is the game's own speed (the lifted code's work for a frame);
     PORSCHE_PROF=1 in a race: 95,000 grDrawTriangle calls a second (0.15 s of each second in the call itself),
-    20,000 critical sections a second.
+    20,000 critical sections a second. (The profile times the call's body only: the search for the call by
+    its name came before the clock started, and was the larger part. See the next but one item.)
+- A frame of a race cost the game twice what it had to (2026-11-15): the way a call took through the runtime.
+  win32_call found what an import does by its name, one chain of string compares through win32.c, winsock.c,
+  fileio.c and win32_ext.c (some 230 compares), and glide3x.dll's calls came last, with 50 more compares of
+  their own; a race makes 95,000 grDrawTriangle, some 40,000 Glide state calls and 20,000 Enter/Leave
+  CriticalSection a second. Each triangle also looked its texture up again (the TMU pages, the cache of
+  decoded textures) and packed and compared the whole draw state.
+  Now: porsche_fast_call (porsche_win32.c, asked by win32.c before its chain: patch_rt9l.py) knows by the
+  import's number whether a call is one of glide3x.dll's or a critical section's and does it; glide.c has its
+  calls by number (glide_id once, glide_call_id after); the texture of a draw is kept until a call that is not
+  a draw (tex_now); and the backend skips packing the state while glide_state_serial has not moved.
+  Measured in one scene, paused just after the start of a race at 3058x1080 (the game draws the same frame
+  over and over, nothing waits for a tick; "[glide-gpu] the game's work a frame: N ms the middle one"):
+  10.5-10.9 ms before, 4.5-6.1 ms after. The picture is the same (race, pause menu, main menu, options).
+  Not measured: how often frames still take two ticks in the heavy parts of a track in the user's window
+  (it was 14-26% at 18-19 ms a frame), and the native build was not built with it.
+  The user's first try of it (2026-11-15 20:09) ran the build before it: their page had been loaded at 19:20,
+  the module was built at 19:55, and the page fetches the module when it loads, not at Play. A new build needs
+  the page reloaded (F5). The log tells: this build's line reads "... ms the middle one, ...", the one before
+  "... ms on average, ..." only. Their second try (20:16, page reloaded, a 3.5 minute race at 3440x1270):
+  the game now waits for its tick nearly everywhere ("14.6-15.5 ms the middle one" is the tick, 15.6 ms; menus
+  5 ms): 59-64 frames a second, 84-100% of them one tick, 2-11% two ticks, in all but two of 17 windows (those
+  two: 55-57 a second, 18-21% two ticks, with 9-10% frames of no tick and only 7.6-10.3 ms of work: not the
+  game's speed; the last one is the pause and quit). Before, the heavy parts were 51-56 a second with 19-27%
+  two ticks. Not the same drive, so not a strict comparison. By eye the user saw no difference on the first
+  try (old build) and has not said for the second.
+  What is left is how the frames land on the display: they stay 1 refresh (10-26%), 2 (29-59%), 3 (24-31%),
+  4 (3-12%) where an even 64 on 144 Hz would be 2, 2, 2, 3. That is the ticks' own timing and the page drawing
+  at animation frames, and what option 3 is for.
 - Opponents a few car lengths ahead had no wheels and no floor ("the chassis is gone"), in the wide modes. It is
   the game's level of detail. 0x439F90 picks a car's level each frame: it projects three corners of the car's
   box, adds the two edges' lengths in pixels, and counts that in 640ths of the picture's width (* 640 / the

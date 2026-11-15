@@ -486,6 +486,11 @@ int win32_call(CPU *c, uint32_t idx){
     const char *n = e->name;
     uint32_t r = 0;
 
+    /* Porsche: the calls a race makes by the tens of thousands a second (glide3x.dll's, the critical
+     * sections) are done by the import's number, past the chain of names below */
+    { int porsche_fast_call(CPU *c, uint32_t idx, const char *dll, const char *name, uint32_t *out);
+      if (porsche_fast_call(c, idx, e->dll, n, &r)) goto fast_done; }
+
     /* QueryPerformanceCounter is the most frequent call (frame limiter); to
      * skip the name chain's ~20 strcmps the import index is cached on the
      * first match. */
@@ -784,6 +789,7 @@ int win32_call(CPU *c, uint32_t idx){
         module_note_socket_call(1, n, ARG(c,0), r);
     }
 
+fast_done:
     if (g_prof){
         uint64_t pn = prof_now(); stat_[idx].ns += pn - prof_t; stat_[idx].pcalls++;
         static uint64_t last; if (!last) last = pn;

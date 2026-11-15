@@ -180,6 +180,27 @@ static uint32_t gimme_convert_file(CPU *c){
     return ok;
 }
 
+/* win32.c asks this before its chain of names (patch_rt9l.py): the calls a race makes by the tens of
+ * thousands a second are known by the import's number and done at once.  1: done, *out is the result. */
+void win32_cs_enter(CPU *c); void win32_cs_leave(CPU *c);        /* win32_ext.c */
+int porsche_fast_call(CPU *c, uint32_t idx, const char *dll, const char *name, uint32_t *out){
+    enum { NONE = 1, CS_ENTER, CS_LEAVE, GLIDE };                /* 0: not looked at yet; GLIDE + glide.c's number */
+    static uint8_t kind[4096];
+    if (idx >= sizeof kind) return 0;
+    uint8_t k = kind[idx];
+    if (!k){
+        int id = dll && !strcasecmp(dll, "glide3x.dll") ? glide_id(name) : -1;
+        k = id >= 0 && id < 250 - GLIDE ? (uint8_t)(GLIDE + id)
+          : !strcmp(name, "EnterCriticalSection") ? CS_ENTER : !strcmp(name, "LeaveCriticalSection") ? CS_LEAVE : NONE;
+        kind[idx] = k;
+    }
+    if (k == NONE) return 0;
+    if (k >= GLIDE) return glide_call_id(c, k - GLIDE, out);
+    if (k == CS_ENTER) win32_cs_enter(c); else win32_cs_leave(c);
+    *out = 1;
+    return 1;
+}
+
 int porsche_win32_call(CPU *c, const char *dll, const char *n, uint32_t *out){
     uint32_t r = 0;
     if (dll && !strcasecmp(dll, "glide3x.dll")) return glide_call(c, n, out);

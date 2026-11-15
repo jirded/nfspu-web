@@ -1360,6 +1360,27 @@ static uint32_t disk_space(uint64_t *fr, uint64_t *tot){
     return 1;
 }
 
+/* Enter/LeaveCriticalSection(lpCriticalSection): by themselves, so that win32.c can call them by the
+ * import's number (Porsche: 20,000 times a second in a race) */
+void win32_cs_enter(CPU *c){
+    pthread_mutex_t *m = cs_for(A(c,0));
+    if (m){
+        g_cs_enter++;
+        if (pthread_mutex_trylock(m) != 0){
+            g_cs_contended++;
+            ts_set(TS_CS, A(c,0));
+            guest_yield_begin();          /* release the GIL while waiting */
+            pthread_mutex_lock(m);
+            guest_yield_end();
+        }
+        tl_cs_depth++;
+        cs_owned(m, cur_tid(c), +1);
+    }
+}
+void win32_cs_leave(CPU *c){
+    pthread_mutex_t *m = cs_for(A(c,0));
+    if (m && tl_cs_depth > 0){ tl_cs_depth--; cs_owned(m, 0, -1); pthread_mutex_unlock(m); }
+}
 int win32_ext_call(CPU *c, const char *n, uint32_t *out){
     uint32_t r = 0;
     /* --- Registry --- */
@@ -1963,29 +1984,12 @@ int win32_ext_call(CPU *c, const char *n, uint32_t *out){
     else if (!strcmp(n,"InitializeCriticalSection")||
              !strcmp(n,"InitializeCriticalSectionAndSpinCount")){
         (void)cs_for(A(c,0)); r=1; }
-    else if (!strcmp(n,"EnterCriticalSection")){
-        pthread_mutex_t *m = cs_for(A(c,0));
-        if (m){
-            g_cs_enter++;
-            if (pthread_mutex_trylock(m) != 0){
-                g_cs_contended++;
-                ts_set(TS_CS, A(c,0));
-                guest_yield_begin();          /* release the GIL while waiting */
-                pthread_mutex_lock(m);
-                guest_yield_end();
-            }
-            tl_cs_depth++;
-            cs_owned(m, cur_tid(c), +1);
-        }
-        r=1; }
+    else if (!strcmp(n,"EnterCriticalSection")){ win32_cs_enter(c); r=1; }
     else if (!strcmp(n,"TryEnterCriticalSection")){
         pthread_mutex_t *m = cs_for(A(c,0));
         r=1;
         if (m){ if (pthread_mutex_trylock(m)==0){ tl_cs_depth++; cs_owned(m, cur_tid(c), +1); } else r=0; } }
-    else if (!strcmp(n,"LeaveCriticalSection")){
-        pthread_mutex_t *m = cs_for(A(c,0));
-        if (m && tl_cs_depth > 0){ tl_cs_depth--; cs_owned(m, 0, -1); pthread_mutex_unlock(m); }
-        r=1; }
+    else if (!strcmp(n,"LeaveCriticalSection")){ win32_cs_leave(c); r=1; }
     else if (!strcmp(n,"DeleteCriticalSection")) r=1;
     else return 0;                       /* not this layer's business */
     *out = r;

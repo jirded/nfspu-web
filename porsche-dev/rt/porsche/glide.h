@@ -63,6 +63,12 @@ void glb_step(uint32_t step);
 /* runtime/porsche/glide.c */
 struct CPU;
 int glide_call(struct CPU *c, const char *name, uint32_t *out);
+/* the same by number: glide_id(name) once (-1: no such call), glide_call_id after */
+int glide_id(const char *name);
+int glide_call_id(struct CPU *c, int id, uint32_t *out);
+/* goes up whenever the state a draw is made with (GlState, its texture included) may have changed: a backend
+ * that sees the same number as at the draw before need not look at the state again */
+extern uint32_t glide_state_serial;
 void glide_report(void);
 /* wide screen driving (porsche_hle.c): the area the picture is shown in, and the size a Glide resolution has
  * from now on (w = 0: its own again) */
