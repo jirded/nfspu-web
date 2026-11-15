@@ -147,6 +147,16 @@ static int tex_current(void){
     const uint8_t *src = g_tmu + s->start; int bpp = fmt_bpp(s->fmt);
     for (int i = 0; i < w * h; i++) px[i] = decode_texel(s->fmt, src + (size_t)i * bpp);
     int id = glb_tex_new(w, h, px);
+    {   /* GLIDE_TEXLOG=1: each texture as it is decoded, with how much of it is clear, see-through and solid */
+        static int on = -1;
+        if (on < 0){ const char *e = getenv("GLIDE_TEXLOG"); on = e && *e && *e != '0'; }
+        if (on){
+            int clear = 0, part = 0; uint32_t amin = 255, amax = 0;
+            for (int i = 0; i < w * h; i++){ uint32_t a = px[i] >> 24; if (!a) clear++; else if (a < 255){ part++; if (a < amin) amin = a; if (a > amax) amax = a; } }
+            fprintf(stderr, "[glide] texture %d: format 0x%x %dx%d at 0x%x, clear %d, see-through %d (alpha %u..%u), solid %d\n",
+                    id, s->fmt, w, h, s->start, clear, part, part ? amin : 0, part ? amax : 0, w * h - clear - part);
+        }
+    }
     free(px);
     g_tc[slot] = (TexEnt){ s->start, s->fmt, s->large, s->aspect, id, w, h, g_wgen, g_pal_gen };
     g_tex_decodes++;
@@ -205,10 +215,23 @@ static uint32_t guest_str(const char *s){
     if (p) memcpy(g_mem + p, s, n);
     return p;
 }
+/* Wide screen driving (porsche_hle.c).  Glide's resolutions are a fixed list of sizes; the game is offered some
+ * of them at other sizes, made to fit the page: glide_mode_size(id, w, h) says the size resolution `id` has
+ * from now on and has it listed (grQueryResolutions below); w = 0 takes both back. */
+static int g_mode_size[16][2];
+void glide_mode_size(uint32_t id, int w, int h){ if (id < 16){ g_mode_size[id][0] = w; g_mode_size[id][1] = w ? h : 0; } }
+/* the area the picture is shown in, in device pixels (0x0: not known).  PORSCHE_VIEW=3440x1440 says it for a
+ * test; else the page does */
+void glide_view_size(int *w, int *h){
+    static int env = -1, ew, eh;
+    if (env < 0){ const char *e = getenv("PORSCHE_VIEW"); env = e && sscanf(e, "%dx%d", &ew, &eh) == 2 && ew > 0 && eh > 0; }
+    if (env){ *w = ew; *h = eh; } else glb_view_size(w, h);
+}
 static void res_dims(uint32_t res, int *w, int *h){
     static const short t[][2] = { {320,200},{320,240},{400,256},{512,384},{640,200},{640,350},{640,400},{640,480},
         {800,600},{960,720},{856,480},{512,256},{1024,768},{1280,1024},{1600,1200},{400,300} };
     if (res < 16){ *w = t[res][0]; *h = t[res][1]; } else { *w = 640; *h = 480; }
+    if (res < 16 && g_mode_size[res][0]){ *w = g_mode_size[res][0]; *h = g_mode_size[res][1]; }
 }
 
 int glide_call(CPU *c, const char *name, uint32_t *out){
@@ -241,11 +264,11 @@ int glide_call(CPU *c, const char *name, uint32_t *out){
     }
     else if (!strcmp(n, "grQueryResolutions")){
         /* (const GrResolution *template, GrResolution *out): {res, refresh, ncolor, naux} */
-        static const uint32_t res[] = { 7, 8, 0xc };
         uint32_t t = A(c, 0), o = A(c, 1), cnt = 0;
-        for (int i = 0; i < 3; i++){
-            if (t && MR32(t) != 0xffffffffu && MR32(t) != res[i]) continue;
-            if (o){ MR32(o + 16*cnt) = res[i]; MR32(o + 16*cnt + 4) = 0; MR32(o + 16*cnt + 8) = 2; MR32(o + 16*cnt + 12) = 1; }
+        for (uint32_t id = 0; id < 16; id++){
+            if (id != 7 && id != 8 && id != 0xc && !g_mode_size[id][0]) continue;   /* 640x480, 800x600, 1024x768, and the page's */
+            if (t && MR32(t) != 0xffffffffu && MR32(t) != id) continue;
+            if (o){ MR32(o + 16*cnt) = id; MR32(o + 16*cnt + 4) = 0; MR32(o + 16*cnt + 8) = 2; MR32(o + 16*cnt + 12) = 1; }
             cnt++;
         }
         r = cnt * 16u;

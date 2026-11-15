@@ -61,6 +61,11 @@ Open **http://localhost:8080/** in Chrome and press **Play** (or Enter). The gam
   shows the file behind them.
 - **Controls:** the game's keys, as its own Options show them, and the page's keys.
 
+**Wide screen:** the game's own Options > graphics > screen size lists, after its three 4:3 sizes, `720p`, `1080p`
+and `1440p` (that many lines, as wide as your window) and the window's own size. A race at one of these fills
+the window: you see more to the sides and the dials stay in the corners. The menus stay 4:3. If you change the
+window, the size follows at the next race. The dials keep their size in pixels, so they are largest at `720p`.
+
 While you play: **Home** opens the page's menu (full screen, frame-rate counter, controls, log, **Quit game**),
 **End** switches the frame-rate counter, **Insert** saves a screenshot, and holding **Esc** leaves full screen.
 The game uses F1 to F12 itself. The game pauses while its tab is in the background.

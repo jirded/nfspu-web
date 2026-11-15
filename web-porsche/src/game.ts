@@ -9,6 +9,7 @@ import { attachAudio, type AudioHandle } from '../../web/src/audio/index';
 import { attachInput, type InputHandle } from '../../web/src/input/index';
 import { attachGlide, PG_HOST_KIND, type GlideRenderer } from './glide-gpu';
 import { SAVE_DIR } from './savefs';
+import { viewPixels } from './wide';
 
 const HOST_KIND_FB = 8, HOST_KIND_TICKER = 10;
 /** how long quit() waits for the game: the runtime's own 2 s for WM_CLOSE, then at most 5 s for open save files
@@ -45,6 +46,8 @@ export interface RunningGame {
   quit(graceMs?: number): Promise<'quit' | 'stopped'>;
   /** frames shown in the last second */
   fps(): number;
+  /** the game's memory; a guest address is an offset into it (for looking at the game while it runs) */
+  memory: WebAssembly.Memory;
 }
 
 /** the software picture: copies each frame the game publishes onto the canvas; returns its frame count and a stop */
@@ -121,9 +124,18 @@ export async function startGame(o: GameOptions): Promise<RunningGame> {
     log(`[page] first frame from the game at ${(performance.now() - t0).toFixed(0)} ms (${first.gpu ? 'WebGPU' : 'software'} renderer)`);
     let renderer: GlideRenderer | null = null, frames: () => number;
     if (first.gpu) {
+      const stage = canvas.parentElement ?? canvas;
+      const view = () => viewPixels(stage.clientWidth, stage.clientHeight, devicePixelRatio);
       const g = renderer = await attachGlide(proc, canvas, { log, scale: o.scale, trace: o.trace,
-        displayHz: o.displayHz, autoCap: o.autoScaleCap, onAutoCap: o.onAutoScale, profile: o.profile });
+        displayHz: o.displayHz, autoCap: o.autoScaleCap, onAutoCap: o.onAutoScale, profile: o.profile,
+        // wide screen driving (wide.ts): the game is told the stage's size, and the canvas takes the shape of
+        // the picture the game makes (style.css #screen): 4:3 in the menus, the stage's in a wide race
+        view: view(),
+        onSize: (w, h) => { canvas.style.setProperty('--game-aspect', String(w / h)); log(`[page] the picture is ${w}x${h}`); } });
       undo.push(() => g.detach());
+      const watch = new ResizeObserver(() => g.view(...view()));
+      watch.observe(stage);
+      undo.push(() => { watch.disconnect(); canvas.style.removeProperty('--game-aspect'); });
       frames = () => g.stats().frames;
     } else {
       const s = present(proc, canvas, first.r.ptr);
@@ -144,7 +156,7 @@ export async function startGame(o: GameOptions): Promise<RunningGame> {
       proc.terminate();
     });
     return {
-      input, renderer, exited: proc.exited,
+      input, renderer, exited: proc.exited, memory: proc.memory as WebAssembly.Memory,
       fps: () => rate,
       async quit(graceMs = QUIT_GRACE_MS) {
         let done = false;

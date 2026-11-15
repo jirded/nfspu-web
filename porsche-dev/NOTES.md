@@ -38,6 +38,7 @@ WSL Ubuntu-24.04 (user jd) as /mnt/c/Development/NFSPU:
 - rt/porsche/ -> runtime/porsche/
   - glide.c: Glide 3 front end (state, vertex layout, 4 MB TMU memory + decoded texture cache, palettes, LFB,
     grGet, grQueryResolutions). grBufferSwap calls vclock_tick and watchdog_on_present; metal_frames() = frame count.
+    glide_view_size / glide_mode_size: wide screen driving (below).
   - glide.h, glide_sw.c (software rasterizer, PNG dump PORSCHE_DUMP / PORSCHE_DUMP_DIR / PORSCHE_FPS).
   - porsche_win32.c: Win32 extras (GetKeyState, GetAsyncKeyState, CharUpperA, GetKeyboardType, DirectDrawCreate
     fails cleanly, GetDC/GetDeviceCaps ...) and extra imports: glide3x.dll entry points, gimme.dll ConvertFile.
@@ -66,7 +67,8 @@ WSL Ubuntu-24.04 (user jd) as /mnt/c/Development/NFSPU:
   the workers when the game exits); src/ui-play.ts, ui-saves.ts, ui-game.ts, ui-controls.ts, ui-menu.ts = one
   panel each; src/settings.ts (settings.ini: keys, parse, put, resolve), savefs.ts (OPFS save folder + data cache),
   profiles.ts (which files are a player), backup.ts + zip.ts, keys.ts (the game's and the page's keys), overlay.ts,
-  dialogs.ts, logs.ts, display.ts, instance.ts; src/glide-gpu.ts (WebGPU renderer, WGSL uber-shader, pipeline
+  dialogs.ts, logs.ts, display.ts, instance.ts; src/wide.ts (wide screen driving: the view's size told to the game,
+  the scale a wide picture fits a texture at); src/glide-gpu.ts (WebGPU renderer, WGSL uber-shader, pipeline
   cache, shot() = the picture as PNG, the automatic scale); src/autoscale.ts (when Auto draws the picture
   smaller); src/ticker.ts; test/*.test.mjs (unit tests of the pure modules); mouse-latency.js (a probe, see
   "Root causes": ?probe=mouse); build.mjs (esbuild); server.mjs (Node server).
@@ -83,7 +85,7 @@ WSL Ubuntu-24.04 (user jd) as /mnt/c/Development/NFSPU:
 - Wasm: webbuild.sh (install_rt + tools/porsche_web_build.sh) -> out/web/porsche.wasm
   (~2 min when every shard rebuilds, i.e. after a lift; seconds for runtime-only changes).
 - Page: webpage.sh (copies web-porsche into the repo, runs node web-porsche/build.mjs). Unit tests: pagetest.sh
-  (copy, then node --test web-porsche/test/*.test.mjs; 34 tests).
+  (copy, then node --test web-porsche/test/*.test.mjs; 37 tests).
 - Test server: testserver.sh start|run|stop = a second server on http://127.0.0.1:8081/ (stopped by PID only;
   server_stop.sh's pkill would also take the user's server). Its page log is out/test-browser.log (tlog.sh [N]
   [pattern], tlogafter.sh PATTERN [N]). Browser checks run there (or at http://localhost:8081/, one more origin),
@@ -102,6 +104,12 @@ WSL Ubuntu-24.04 (user jd) as /mnt/c/Development/NFSPU:
 - Browser (Chrome, WebGPU): boot, intro, profile select, menus, 3D garage, quick race on Cote d Azur at ~55-61 fps
   with HUD, opponents and sound. Mouse works. Keyboard verified with synthetic keys (throttle, reverse, left, right);
   the user also drove it by hand.
+- Wide screen driving (2026-11-15): the game's Options > graphics > screen size offers, after 640x480, 800x600 and
+  1024x768 (4:3, bars at the sides), "720p", "1080p", "1440p" (that many lines at the window's aspect) and the
+  window's own size; a race in one of those fills the window with a wider view, the dials in the corners; the
+  menus stay 640x480. Checked on Cote d Azur in a 3440x1215 window: all four (2038x720, 3058x1080, 4076x1440,
+  3440x1214, 60+ fps at 1x), the pause menu, race again, a replay, back to the menus, the game's own "wide
+  screen" option on (no bars in a wide race, still "on" afterwards), a changed window between two games.
 - Start page (2026-11-15): Play card with states, Saves (players, backup, restore, screenshots), Game (4 settings,
   game data, settings.ini), Controls; while playing Home = page menu, End = frame-rate counter, Insert =
   screenshot (the game uses F1-F12 itself: its "predefined keys"), Quit game from the menu. Checked in Chrome at
@@ -187,12 +195,92 @@ WSL Ubuntu-24.04 (user jd) as /mnt/c/Development/NFSPU:
 - Stuck Alt: Chrome on Windows can keep Alt's key up (no blur) -> the game saw Alt held, arrows came as WM_SYSKEYDOWN,
   the car did not move. Patch 9j: on a non-modifier key press, a held Alt/Ctrl/Shift the event says is up is released.
 
+## The name of the chosen tab was under its red wedge (2026-11-15)
+In the options the chosen tab is a solid red wedge with its name in white; here the wedge had no name.
+- The menus do not draw as they go. Every picture and text goes into a sorted list (0x65B958, a red-black tree;
+  0x4D9280.. put quads in, 0x4D9B30 textured ones) and the list is drawn when a control is done (0x4DA5F0, from
+  0x4DAAC0). 0x4D9450 orders two entries: depth (+0x18, farther first; the menus' depth is the global 0x65B954,
+  0.99998 at the start of a frame, a layer nearer with 0x4DAA10), then the turn the entry was put in (+4, the
+  counter 0x65B970; an entry can share the turn of the one before), then the address of its texture or font
+  (+0xC), so entries with one texture are drawn together.
+- A control's label shares the turn of the picture under it, so which came first was decided by where the heap
+  had put the font and the picture: on Windows the font was higher (the label last, on top), here lower (the
+  label first, under the solid wedge; under the see-through yellow of a hovered tab it only looked tinted).
+  FEData/Controls/Graphic Tab Button.ctr says what was meant: state.selected parts=data,selectedbg,label.
+  Override 0x4D9450 (porsche_hle.c): within a turn pictures (+0 is 0) come before texts.
+- How it was found: renderer.trace() (the frame's draws: the label came before the wedge, both at depth 65536),
+  ?env=GLIDE_TEXLOG=1 (the wedge's texture is solid, so it was not meant to show the label through), the
+  .ctr changed in the save folder (neither the control's nor the state's order of parts moved the label), a
+  backtrace at grDrawTriangle for the label's triangles (they came from another control's flush: a list, not
+  immediate drawing), then reading 0x4D9450.
+- The same tie decides other controls' labels over their pictures; none other was seen wrong.
+
+## Wide screen driving (2026-11-15)
+What the user asked for: a race as wide as the window with a wider view (not a stretched one), the dials in the
+corners, no bars; the menus stay as they are; and the size chosen in the game's options the way nfsu2-web has
+it (720p, 1080p, 1440p, the window's own size, next to the 4:3 ones). A first version widened the three 4:3
+sizes behind the player's back (a page setting): the options did not say what was drawn, so it went.
+- The game's modes are the thrash driver's table (voodoo2z.dll's data, 0xA140C8: 40 bytes a row = width, height,
+  depth, 4, known to the driver, buffers with/without depth as Glide answers grQueryResolutions; a row is one of
+  Glide's resolutions: row 1 = 640x480 (Glide 7), 2 = 800x600 (8), 3 = 1024x768 (0xC), 4 = 1280x1024 (0xD),
+  5 = 1600x1200 (0xE), 6 = 512x384 (3), 9 = 640x400 (6), 11 = 856x480 (0xA)). The game reads the table in place
+  ([[0x628130]+0x70]+8), lists the rows Glide has in the options (0x4BC710, a row needs >= 2 buffers and
+  640x480), finds a row by its exact size (0x5376C0 -> 0x572A00 -> 0x572990) and keeps the player's choice as a
+  size. 0x619780 = the row in use, then its width, height, depth; 0x657A48.. = the size a race asks for (640x480
+  while in the menus).
+- porsche_hle.c gives rows 4, 5, 6 and 9 other sizes (wide_refresh): 720, 1080, 1440 lines at the aspect of the
+  page's view (1:1 to 4:1), and the view's own size (even, at most 8192 a side); a row that would repeat an
+  earlier one, and all four while the view is unknown (the software renderer), are not offered. glide.c lists
+  those Glide resolutions and opens them at those sizes (glide_mode_size). Refreshed before the options' list is
+  made (override 0x4BC710) and at every setMode (override 0x467FC0), never the row in use. A size saved when the
+  window had another shape no longer exists: the race's setMode call (it returns to 0x4B6CBE) then asks for the
+  row with the same lines as it is now, any other unknown size for the view's own row, else 1024x768
+  (wide_follow).
+- The list's lines are made by sprintf("%d x %d x %d") at 0x4BC7BE: override 0x5A0FBF (sprintf) answers that
+  one call for a wide row with "720p" .. or "3440 x 1270".
+- Every change of the mode after the start goes through 0x467FC0 setMode(w, h, depth, buffers): 640x480 for the
+  menus (from 0x4D3445), the films and loading screens (0x4DD624, 0x4DD724), the options' size at the start of
+  a race (from 0x4B6CBE).
+- The picture was the 4:3 one stretched: 0x466F30 (and its twin 0x4670E0) call 0x5391B0 perspective(angle across,
+  aspect, near, far) with aspect = view's part of the screen * 640 / 480 (the constants 0x5B2A8C, 0x5B2A88),
+  whatever the mode. Override 0x5391B0: in a mode wider than 4:3 the angle across grows by as much and the aspect
+  follows, so up and down the view is what it was. The side planes for culling come from the same call.
+- Bars above and below with the dials in them (the user's first complaint) are the game's own "wide screen"
+  option, on for a new player: 0x657D5C (config "WIDESCREEN"; the table at 0x5D21xx is {variable, name, id}, so
+  0x657D60 is the next option, not this one). The view is then the band 0.15..0.85 of the height (0x468E60).
+  The value comes back from the player's config between setMode and the race, so it is taken off where the race
+  runs: override 0x4152E0 (the race, from its views to its end) sets it to 0 in a mode wider than 4:3 and puts
+  it back after.
+- The dials, the mirror, the pause menu and the replay's buttons place themselves by the mode's width and keep
+  their size in pixels: at 1440 lines they are a third of what they are at 480. 720p has them largest.
+- The page (wide.ts, game.ts, glide-gpu.ts): the stage's size in device pixels goes into PgCtl.view_w/view_h at
+  the start and at every resize. The canvas has the picture's aspect (--game-aspect, container units in
+  style.css). The scale is cut so the picture fits one texture (fitScale). ?env=PORSCHE_VIEW=3440x1440 says the
+  view instead of the page (a test).
+- How it was found: the picture changed when the constant 0x5B2A88 was poked in the running game (the page can
+  read and write the game's memory: __shell.running.memory, a guest address is an offset), fptan appears in
+  two functions only (fngrep.sh 'tan('), a diagnostic in the setMode override showed which call starts a race,
+  and nfsu2-web's runtime/com.c (modes_refresh) is where the list's shape comes from.
+- Not checked: other tracks and cameras for missing scenery at the edges of a very wide view, the 3D screens of
+  the career, split screen, a window narrower than 4:3.
+- The renderer's device is destroyed when a game ends (glide-gpu.ts detach) and its loss is logged: after a day
+  of starting games in one Chrome, WebGPU and WebGL were gone from the whole browser ("no WebGPU adapter";
+  Chrome gives the graphics card up after its process crashed a few times) until Chrome was started again.
+  Whether the devices left behind did it is not known.
+
 ## How to debug a freeze
 1. Reproduce in the browser, wait about 20 s: the stall watchdog prints every guest thread (state, eip, guest stack,
    held critical sections) into the page log.
 2. A thread "holds the GIL: running" for long = a spin loop. Disassemble with
    .venv/bin/python -I x86dis.py /mnt/c/Development/NFSPU/games/porsche/Porsche.exe START END; inspect lifted C with fnsrc.sh, fnstr.sh,
-   fnof.sh, writers.sh (who writes an address).
+   fnof.sh, writers.sh (who writes an address), readers.sh (who names it), callers.sh, fns.sh (several small
+   functions without the flag lines), fngrep.sh (functions with a line matching), strref.sh (who names a text),
+   flt.sh (the float at an address), dis.sh START END, fnctx.sh (lines around a pattern in functions), fnwr.sh
+   (functions with a matching line, in an address range), retof.sh (who makes the call returning to an address),
+   vtab.sh (a vtable's functions), imports.sh. In the browser: __shell.running.memory (read and write the
+   game's memory), __shell.running.renderer.trace() (the next frame's draws with their boxes and depths into the
+   log), ?env=GLIDE_TEXLOG=1 (each texture as it is decoded). The scratch script fshinfo.py (not in the repo)
+   listed the images of an .fsh file.
 3. Fix with an override: add the address to OVERRIDE in rt/porsche_lift.sh (the lifted original becomes
    sub_XXXXXXXX_orig), define sub_XXXXXXXX in rt/porsche/porsche_hle.c, run relift_build.sh.
 
@@ -211,7 +299,12 @@ WSL Ubuntu-24.04 (user jd) as /mnt/c/Development/NFSPU:
   once and kept the lock (it had to be closed by hand).
 - More menu points (game coordinates): select a player in "select user" (297,239), continue (322,402), options
   (498,466), there: controllers (216,11), advanced controls (451,76), predefined keys (532,118); in "create
-  player" click the name box (360,169) before typing; the error box's OK (322,262).
+  player" click the name box (360,169) before typing; the error box's OK (322,262). Options: graphics (420,12),
+  the screen size list (297,235), its lines 640x480 (404,249), 800x600 (404,263), 1024x768 (404,277), 720p
+  (404,292), 1080p (404,306), 1440p (404,319), the window's size (404,333); wide screen (297,253), on (404,281);
+  back (38,467). In a race the same helper works (it clicks by the canvas's fractions), but the pause menu keeps
+  its size in pixels, so where its buttons are depends on the mode: look first (at 720 lines quit (320,256), exit
+  to game menu (320,245)).
 - Page state for checks: window.__shell (owner, running, fs, log.tail(n), quit()).
 - Do not take the user's own play for a test result: verify with controlled input and the key log.
 

@@ -10,13 +10,14 @@
 // The game's frame buffer is an offscreen target at `scale` times the game's
 // resolution, shown on the canvas at the end of each frame.
 import { ScaleGovernor } from './autoscale';
+import { fitScale } from './wide';
 import type { GameProcess } from '../../web/src/host/process';
 
 export const PG_HOST_KIND = 9;
 const PG_MAGIC = 0x314c4750, PG_NSLOT = 3, PG_CMD_OFF = 64, PG_VERT_OFF = 2 << 20, PG_VERT_FLOATS = 12;
 const OP_CLEAR = 1, OP_DRAW = 2, OP_TEXNEW = 3, OP_TEXFREE = 4, OP_LFB = 5;
 // control block, u32 index
-const C_MAGIC = 0, C_W = 2, C_H = 3, C_READY = 4, C_DONE = 5, C_SLOT = 8, C_ATTACHED = 11, C_AHEAD = 12;
+const C_MAGIC = 0, C_W = 2, C_H = 3, C_READY = 4, C_DONE = 5, C_SLOT = 8, C_ATTACHED = 11, C_AHEAD = 12, C_VIEW_W = 13, C_VIEW_H = 14;
 // draw state, u32 index (glide_gpu.h)
 const S = {
   TEX: 17, FILTER_MIN: 18, FILTER_MAG: 19, CLAMP_S: 20, CLAMP_T: 21,
@@ -407,6 +408,12 @@ export interface GlideRenderer {
   ahead(n: number): void;
   /** the picture's size in times the game's resolution; undefined: what fits the canvas, up to 4 */
   scale(n: number | undefined): void;
+  /** the area the picture is shown in, in the display's pixels (wide.ts viewPixels): the game makes its wide
+   *  display modes fit it, from the next time they are listed or a race starts */
+  view(w: number, h: number): void;
+  /** for looking at a picture: the draws of the frame after the next go to the log (GlideOptions.trace does the
+   *  same for frames known beforehand) */
+  trace(): void;
   /** for measuring: 'full' is the real shader; 'uber' the one before it, with every mode read for each pixel (the
    *  same picture); 'flat' a trivial fragment shader (the picture is wrong) */
   variant(v: 'full' | 'flat' | 'uber'): void;
@@ -428,6 +435,10 @@ export interface GlideOptions {
   autoCap?: number;
   /** the automatic scale came down to `cap` */
   onAutoCap?: (cap: number) => void;
+  /** GlideRenderer.view's first value (default: not known) */
+  view?: [number, number];
+  /** the game's picture has this size now (at the first frame, and whenever the game changes its display mode) */
+  onSize?: (w: number, h: number) => void;
 }
 
 export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, opts: GlideOptions = {}): Promise<GlideRenderer> {
@@ -438,6 +449,8 @@ export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, 
   if (!adapter) throw new Error('no WebGPU adapter');
   const timed = !!opts.profile && adapter.features.has('timestamp-query');
   const device = await adapter.requestDevice(timed ? { requiredFeatures: ['timestamp-query'] } : {});
+  let closing = false;   // detach destroys the device: that loss is not news
+  void device.lost.then(info => { if (!closing) log(`[glide-gpu] the graphics device is lost (${info.reason || 'no reason given'}): ${info.message}`); });
   // the card's own clock around each pass (profile): four timestamps a frame, read back when the frame is done
   const qs = timed ? device.createQuerySet({ type: 'timestamp', count: 4 }) : null;
   const qResolve = timed ? device.createBuffer({ size: 32, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC }) : null;
@@ -507,8 +520,10 @@ export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, 
   const presentPipe = device.createRenderPipeline({ layout: 'auto', label: 'present',
     vertex: { module: mPresent, entryPoint: 'vs' }, fragment: { module: mPresent, entryPoint: 'fs', targets: [{ format }] } });
   const ensureTarget = (w: number, h: number) => {
-    const want = opts.scale ?? Math.max(1, Math.min(cap, Math.round((canvas.clientHeight * devicePixelRatio) / h) || 1));
+    const want = fitScale(opts.scale ?? Math.max(1, Math.min(cap, Math.round((canvas.clientHeight * devicePixelRatio) / h) || 1)),
+      w, h, device.limits.maxTextureDimension2D);
     if (color && w === gw && h === gh && want === scale) return;
+    if (w !== gw || h !== gh) opts.onSize?.(w, h);
     gw = w; gh = h; scale = want;
     color?.destroy(); depth?.destroy();
     color = device.createTexture({ size: [w * scale, h * scale], format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC });
@@ -634,10 +649,16 @@ export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, 
       if (op === OP_DRAW && nb < MAX_BLOCKS) {
         const prim = cmds[a], firstV = cmds[a + 1], count = cmds[a + 2], so = a + 3;
         if (traceFrames.has(f)) {
-          const st = cmds.subarray(so, so + S.COUNT), fv = new Float32Array(buf, base + PG_VERT_OFF + firstV * PG_VERT_FLOATS * 4, Math.min(count, 3) * PG_VERT_FLOATS);
+          const st = cmds.subarray(so, so + S.COUNT), fv = new Float32Array(buf, base + PG_VERT_OFF + firstV * PG_VERT_FLOATS * 4, count * PG_VERT_FLOATS);
+          let z0 = Infinity, z1 = -Infinity, x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+          for (let i = 0; i < count; i++) {
+            const x = fv[i * PG_VERT_FLOATS], y = fv[i * PG_VERT_FLOATS + 1], z = fv[i * PG_VERT_FLOATS + 2];
+            if (z < z0) z0 = z; if (z > z1) z1 = z; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+          }
           log(`[trace ${f}] draw prim ${prim} v${firstV}+${count} tex ${st[17]} cc ${[...st.subarray(0, 5)]} ac ${[...st.subarray(5, 10)]} tc ${[...st.subarray(10, 16)]} ` +
               `blend ${[...st.subarray(22, 26)]} atest ${st[26]}/${st[27]} depth m${st[28]} f${st[29]} w${st[30]} b${st[31] | 0} chroma ${st[32]}:${st[33].toString(16)} ` +
-              `mask ${st[34]}${st[35]} fog ${st[36]} clip ${[...st.subarray(54, 58)]} v0 ${[...fv.subarray(0, 11)].map(x => +x.toFixed(3))}`);
+              `mask ${st[34]}${st[35]} fog ${st[36]} clip ${[...st.subarray(54, 58)]} v0 ${[...fv.subarray(0, 11)].map(x => +x.toFixed(3))} ` +
+              `box ${[x0, y0, x1, y1].map(x => +x.toFixed(1))} z ${+z0.toFixed(1)}..${+z1.toFixed(1)}`);
         }
         const ub = nb++ * (UBLOCK / 4);
         ustage.set(cmds.subarray(so, so + S.COUNT), ub);
@@ -774,6 +795,7 @@ export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, 
   // at all (0) cost it a refresh of waiting a frame (54 against 64 frames a second in a race, 68 against 97 in
   // the menus, on a 144 Hz display) and the mouse came no sooner; two is one more frame that may be stale.
   Atomics.store(ctlI(), C_AHEAD, opts.ahead ?? 1);
+  Atomics.store(ctlI(), C_VIEW_W, opts.view?.[0] ?? 0); Atomics.store(ctlI(), C_VIEW_H, opts.view?.[1] ?? 0);
   Atomics.store(ctlI(), C_ATTACHED, 1); Atomics.notify(ctlI(), C_ATTACHED);
   const tick = (now: number) => {
     if (!running) return;
@@ -810,7 +832,9 @@ export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, 
     skipStale(on) { skip = on; },
     ahead(n) { Atomics.store(ctlI(), C_AHEAD, Math.max(0, Math.min(PG_NSLOT - 1, n | 0))); },
     scale(n) { opts.scale = n; gov.reset(); },
+    view(w, h) { Atomics.store(ctlI(), C_VIEW_W, w | 0); Atomics.store(ctlI(), C_VIEW_H, h | 0); },
     variant(v) { variant = v; },
+    trace() { traceFrames.add(Atomics.load(ctlI(), C_READY) + 2); },
     gpuTimes() {
       if (!qs) return null;
       const n = tN || 1, px = (gw || 640) * (gh || 480);
@@ -827,6 +851,8 @@ export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, 
       return await c.convertToBlob({ type: 'image/png' });
     },
     compare() { return new Promise(res => { cmpWant = res; }); },
-    detach: () => { running = false; Atomics.store(ctlI(), C_ATTACHED, 0); Atomics.notify(ctlI(), C_ATTACHED); ro.disconnect(); },
+    // the device goes with the game: its textures and buffers are the card's memory, and a game started later
+    // makes its own
+    detach: () => { running = false; Atomics.store(ctlI(), C_ATTACHED, 0); Atomics.notify(ctlI(), C_ATTACHED); ro.disconnect(); closing = true; device.destroy(); },
   };
 }

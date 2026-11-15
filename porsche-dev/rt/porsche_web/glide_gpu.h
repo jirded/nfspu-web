@@ -13,6 +13,8 @@
  *                  makes the next, which costs it up to a refresh of the display a frame.  The page asks for 1:
  *                  the next frame is made while this one waits to be drawn.  Every frame ahead is one more that
  *                  may be stale by the time it is shown.
+ *   i32 view_w, view_h   the area the page shows the picture in, in device pixels (the page writes them; 0: not
+ *                  known).  The wide display modes are made to fit it (runtime/porsche/porsche_hle.c).
  *
  * A frame's packet: a header, the commands from PG_CMD_OFF, the vertices
  * from PG_VERT_OFF (PG_VERT_FLOATS floats each).  Commands: u32 op, u32 size
@@ -36,6 +38,7 @@ typedef struct {
     uint32_t slot[PG_NSLOT];
     int32_t  attached;
     int32_t  ahead;
+    int32_t  view_w, view_h;
 } PgCtl;
 
 typedef struct { uint32_t frame, ncmd, cmd_bytes, nvert; } PgHeader;

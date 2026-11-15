@@ -90,6 +90,7 @@ static void dump_frame(const char *tag){
 }
 static void at_exit_dump(void){ if (g_front && getenv("PORSCHE_DUMP")) dump_frame("last_"); }
 
+void glb_view_size(int *w, int *h){ *w = 0; *h = 0; }   /* no page to fill */
 void glb_open(int w, int h){
     if (w == W && h == H && g_back) return;
     W = w; H = h;

@@ -133,10 +133,13 @@ dialog ul { margin: 8px 0 0; padding-left: 18px; font-size: 13px; }
 #menu .item:hover span, #menu .item:focus-visible span { color: #fff; }
 
 /* ---- the game */
-#stage { display: none; position: fixed; inset: 0; background: #000; align-items: center; justify-content: center; }
+#stage { display: none; position: fixed; inset: 0; background: #000; align-items: center; justify-content: center; container-type: size; }
 body.playing #stage { display: flex; }
 body.playing #start { display: none; }
-#screen { background: #000; max-width: 100%; max-height: 100%; aspect-ratio: 4 / 3; height: 100%; outline: none; }
+/* the canvas has the shape of the game's picture (--game-aspect, game.ts: 4:3 in the menus, the stage's in a race
+   at one of the wide screen sizes) and is as large as fits the stage */
+#screen { background: #000; outline: none; --game-aspect: 1.3333333;
+  width: min(100cqw, calc(100cqh * var(--game-aspect))); height: min(100cqh, calc(100cqw / var(--game-aspect))); }
 #overlay { position: absolute; top: 8px; left: 8px; padding: 3px 8px; background: rgba(0, 0, 0, .6); color: #d9dcd6; pointer-events: none;
   font: 12px/1.4 ui-monospace, Consolas, monospace; white-space: pre; }
 #toast { position: absolute; left: 50%; bottom: 8%; transform: translateX(-50%); padding: 6px 16px; background: rgba(0, 0, 0, .75);

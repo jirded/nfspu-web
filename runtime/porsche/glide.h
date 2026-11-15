@@ -53,9 +53,15 @@ void glb_tex_free(int id);
 /* the colour buffer as 32-bit ARGB, for linear frame buffer reads and writes */
 void glb_read_rgb(int x, int y, int w, int h, uint32_t *argb, int stride_px);
 void glb_write_rgb(int x, int y, int w, int h, const uint32_t *argb, int stride_px, const uint8_t *written);
+/* the area the picture is shown in, in device pixels; 0x0: not known */
+void glb_view_size(int *w, int *h);
 
 /* runtime/porsche/glide.c */
 struct CPU;
 int glide_call(struct CPU *c, const char *name, uint32_t *out);
 void glide_report(void);
+/* wide screen driving (porsche_hle.c): the area the picture is shown in, and the size a Glide resolution has
+ * from now on (w = 0: its own again) */
+void glide_view_size(int *w, int *h);
+void glide_mode_size(uint32_t id, int w, int h);
 #endif

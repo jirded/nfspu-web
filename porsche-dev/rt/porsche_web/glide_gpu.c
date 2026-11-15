@@ -114,6 +114,7 @@ static void prims(const GlState *s, const GlVert *v, int nv, uint32_t prim){
 }
 
 /* ---------------------------------------------------------- glb_* entry points */
+void glb_view_size(int *w, int *h){ *w = ald(&g_ctl.view_w); *h = ald(&g_ctl.view_h); }
 void glb_open(int w, int h){
     W = w; H = h; g_ctl.w = (uint32_t)w; g_ctl.h = (uint32_t)h;
     ensure_init();
