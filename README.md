@@ -12,8 +12,7 @@ WebGPU, the sound on Web Audio. You bring your own copy of the game.
 ## Status
 
 Work in progress. Boot, profiles, menus, the 3D garage and a quick race (Cote d'Azur, with opponents, HUD and
-sound) run at about 60 fps in Chrome. Keyboard and mouse work. Known: in a fresh browser the game's first "create
-player" ends with an error; do it again and it works. Not tested yet: a race to the finish, the other tracks
+sound) run at about 60 fps in Chrome. Keyboard and mouse work. Not tested yet: a race to the finish, the other tracks
 and modes (career, knockout, factory driver), replays, gamepads and wheels, multiplayer, Firefox and Safari.
 
 ## What you need

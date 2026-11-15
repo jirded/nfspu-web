@@ -56,7 +56,8 @@ WSL Ubuntu-24.04 (user jd) as /mnt/c/Development/NFSPU:
   9c PulseEvent, semaphores, blocking GetMessageA | 9d registry default renderer Glide |
   9e PORSCHE_PROF=1 import wall-time profile | 9f GetAsyncKeyState + mouse buttons |
   9g key/button release waits 2 frames after its press | 9h fileio_resolve_write |
-  9i virtual clock at real speed in long stalls | 9j release stuck modifiers (Alt).
+  9i virtual clock at real speed in long stalls | 9j release stuck modifiers (Alt) |
+  9k DeleteFileA of a file that is only in the read-only game folder succeeds.
 - web-porsche/ -> repo web-porsche/ (webpage.sh copies and builds): the start page (2026-11-15; design and plan in
   specs/2026-11-15-start-page-*.md).  index.html + style.css (the "garage" look, all CSS, no images);
   src/main.ts = the shell (boot, checks, the one-tab lock, start page <-> game, the page's keys, URL options
@@ -124,6 +125,16 @@ WSL Ubuntu-24.04 (user jd) as /mnt/c/Development/NFSPU:
   reads for more than 2 ms, unlock + 1 ms sleep) and 0x5366E0 (jobs runner: guest_fair_yield first). Loops seen:
   0x53C380 wait(ticks), 0x4A88A0 (640 ticks during the race load), the race loop around 0x4154D4.
   The same starvation truncated a profile save (4OGD.sav) earlier.
+- "there was an error trying to create that player" on a fresh save folder, at the first try only (2026-11-15):
+  the game copies SaveData\XXhud1XX.hud to <NAME>1.hud, DELETES XXhud1XX.hud and writes it again (then the same
+  with XXhud2XX.hud). With the save overlay DeleteFileA goes to the write root, where a file the game never wrote
+  is not: unlink said ENOENT, the game stopped. (The game then wrote its default XXhud files into the save
+  folder, so the second try found them and worked.) Patch 9k: when the file is only in the read-only game
+  folder, DeleteFileA says it is deleted (log: "only in the game folder, taken as deleted"). No whiteouts: the
+  game folder's copy is still read until the game writes the file again, which is what it does here; a player
+  that lives only in the game folder (OGD) still cannot really be removed in the game.
+  How it was found: the log of the failed try next to the working one; the working one had a CopyFileA to
+  XXhud1XX.hud right after the DeleteFileA, the failed one stopped at the DeleteFileA.
 - The cursor lagged 100-250 ms behind the mouse (2026-11-15), and the picture was shown at 9-34 frames a second
   while the status said 50-60: the graphics card was behind. Measured on the user's Intel GPU, 144 Hz display, with
   the probe (open the page with ?probe=mouse, Play, keep the mouse still; after 22 s it times the animation
@@ -185,11 +196,6 @@ WSL Ubuntu-24.04 (user jd) as /mnt/c/Development/NFSPU:
   and create a new one. Test profile TEST exists in OPFS (can be removed).
 - Not tested: a race to the finish, other tracks and modes (career, knockout, factory driver), replays, options,
   gamepad/wheel, multiplayer (Winsock), long sessions, weaker machines, Firefox/Safari.
-- BUG (runtime, found 2026-11-15, not fixed): on a fresh save folder the first "create player" ends with "there was
-  an error trying to create that player"; the second attempt works. Log: after CopyFile -> <NAME>1.hud the game
-  calls DeleteFileA on SaveData/XXhud1XX.hud, which then exists only in the read-only game folder, and rewrites
-  XXhud1XX/2XX.hud into the save folder; the next attempt passes. Hypothesis: DeleteFileA of a file that is only
-  in the game folder reports failure (runtime/fileio.c has no whiteouts).
 - The game ignores WM_CLOSE (no close box; "WM_CLOSE ignored, re-posting every second"): Quit game relies on the
   runtime's forced exit after NFSU2_QUIT_GRACE (the page sets 2 s), which waits for open save files. EXIT 0.
 - A player is SaveData/<digit><NAME>.sav (the digit = the portrait chosen) + <NAME>1.hud + <NAME>2.hud; player.lst

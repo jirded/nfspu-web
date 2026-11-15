@@ -776,7 +776,17 @@ int fileio_call(CPU *c, const char *n, uint32_t *out){
     else if (!strcmp(n,"DeleteFileA")){
         char real[1024]; resolve_w(GS(A(c,0)), real, sizeof real);
         if (!write_allowed("DeleteFileA", GS(A(c,0)), real)){ r = 0; set_err(c, 5u); }   /* ERROR_ACCESS_DENIED */
-        else { r = (unlink(real)==0); if (!r) set_err(c, errno_to_win(errno));
+        else { r = (unlink(real)==0);
+               if (!r && errno == ENOENT && g_wroot[0]){
+                   /* only in the read-only game folder: deleted as far as the game goes (no whiteout: its
+                    * copy there is read until the game writes the file again) */
+                   char ro[1024];
+                   if (resolve_in(g_root, GS(A(c,0)), ro, sizeof ro) && strcmp(ro, g_root) != 0){
+                       fprintf(stderr, "[write] DeleteFileA \"%s\": only in the game folder, taken as deleted\n", GS(A(c,0)));
+                       r = 1; }
+                   else errno = ENOENT;
+               }
+               if (!r) set_err(c, errno_to_win(errno));
                else if (is_profile(real)) garage_profile_deleted(real); }
     }
     else if (!strcmp(n,"GetFullPathNameA")){
