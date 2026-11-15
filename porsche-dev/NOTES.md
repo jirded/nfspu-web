@@ -376,6 +376,25 @@ sizes behind the player's back (a page setting): the options did not say what wa
 - Do not take the user's own play for a test result: verify with controlled input and the key log.
 
 ## Open items / ideas
+- NEXT BIG TASK, decided by the user 2026-11-15 (not started): a race drawn at the display's own rate with
+  motion between the game's steps ("option 3"). The user wants full smoothness at whatever the monitor has
+  (144 Hz on theirs; others will play on other machines, so nothing may be fixed to 144). They turned down
+  the cheaper ways as the goal: making the game hold 64 frames a second, and matching the game's step to the
+  display (72 steps on 144 Hz). Start with a design (brainstorm, then a spec), not with code.
+  What is known (details in "Three more from playing"):
+  - the race's world steps 64 times a second (timer 0x4A45D0 counts 0x6559EC), the race loop 0x4152E0 runs
+    0x414FF0 once a tick and then draws one frame; a frame shows the world after the newest step;
+  - the game transforms and lights its geometry on the CPU (the EAGL2 library inside Porsche.exe) and hands the
+    thrash driver screen-space triangles one at a time (95,000 grDrawTriangle a second, 3,000-5,000 triangles a
+    frame); making a frame costs the game 11-19 ms, so it cannot simply draw twice a step;
+  - the view: 0x466F30 / 0x4670E0 set the camera and call 0x5391B0 (perspective), 0x539700 projects a point;
+    cars are objects with levels of detail (R3DCarLOD, 0x439F90, 0x444E00; rtti.py finds classes);
+  - the page knows the display's rate (main.ts measureRefresh; too low when measured in a covered window) and
+    every frame carries the game's tick count (PgHeader.step); the page's log line "a race's frames: ..." says
+    how even the frames are.
+  Not known: where the cars' and the camera's positions live and whether they can be read or set between
+  steps; how to get the geometry before the game's own transform (the meshes and their matrices), which is
+  what drawing on the graphics card at any rate needs; what the dials, the mirror and the 2D parts need.
 - The user's profile OGD is broken (SaveData/4OGD.sav truncated to 56 KB by the earlier freeze): remove it in the game
   and create a new one. Test profile TEST exists in OPFS (can be removed).
 - Not tested: a race to the finish, other tracks and modes (career, knockout, factory driver), replays, options,
