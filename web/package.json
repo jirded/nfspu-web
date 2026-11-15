@@ -1,0 +1,10 @@
+{
+  "name": "nfspu-web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "NFS Porsche Unleashed in the browser: the build tools of the page (web-porsche/build.mjs)",
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

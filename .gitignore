@@ -1,0 +1,21 @@
+# The game and everything made from it never go in the repo:
+# the game folder lives outside it (EA's copyrighted content),
+# the C translated from Porsche.exe and voodoo2z.dll (tools/porsche_lift.sh, tools/porsche_glide_lift.sh),
+/gen/
+# the compiled modules and logs,
+/out/
+# screenshots (they show EA's art), game images and saves.
+/porsche-dev/screens/
+*.fsh
+*.sav
+
+# Tools and build output
+/.venv
+/deps
+node_modules
+/web-porsche/dist/
+__pycache__/
+*.pyc
+*.o
+*.log
+.DS_Store
