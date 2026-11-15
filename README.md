@@ -67,8 +67,9 @@ The game uses F1 to F12 itself. The game pauses while its tab is in the backgrou
 
 For development, the page's address takes `?env=NAME=value` (a runtime variable, for example `PORSCHE_PROF=1`: an
 import profile every 10 s, `NFSU2_KEY_LOG=1`: a key log, `NFSU2_WATCHDOG=20`: a stall report after 20 s),
-`?scale=N` (the picture at N times the game's resolution), `?wasm=` (another module) and `?probe=mouse` (after
-22 s in the first menu it times the frames and the mouse's delay into the log).
+`?scale=N` (the picture at N times the game's resolution), `?wasm=` (another module), `?probe=mouse` (after
+22 s in the first menu it times the frames and the mouse's delay into the log) and `?probe=gpu` (what the
+graphics card needs for a frame at each scale).
 
 ## How it works
 

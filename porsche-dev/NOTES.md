@@ -83,7 +83,7 @@ WSL Ubuntu-24.04 (user jd) as /mnt/c/Development/NFSPU:
 - Wasm: webbuild.sh (install_rt + tools/porsche_web_build.sh) -> out/web/porsche.wasm
   (~2 min when every shard rebuilds, i.e. after a lift; seconds for runtime-only changes).
 - Page: webpage.sh (copies web-porsche into the repo, runs node web-porsche/build.mjs). Unit tests: pagetest.sh
-  (copy, then node --test web-porsche/test/*.test.mjs; 30 tests).
+  (copy, then node --test web-porsche/test/*.test.mjs; 34 tests).
 - Test server: testserver.sh start|run|stop = a second server on http://127.0.0.1:8081/ (stopped by PID only;
   server_stop.sh's pkill would also take the user's server). Its page log is out/test-browser.log (tlog.sh [N]
   [pattern], tlogafter.sh PATTERN [N]). Browser checks run there (or at http://localhost:8081/, one more origin),
@@ -146,10 +146,10 @@ WSL Ubuntu-24.04 (user jd) as /mnt/c/Development/NFSPU:
      each batch took 3 frames' time, 3 more queued meanwhile, and it stayed there. Now, when several wait, the
      older ones are only taken (their textures) if the next starts by clearing the whole picture (glide-gpu.ts
      startsFresh/takeFrame; GlideRenderer.skipStale);
-  2. the game ran up to PG_NSLOT-1 = 2 frames ahead of the page: every frame ahead is one the input is late by.
-     PgCtl.ahead (glide_gpu.h, written by the page, default 0): the game waits in glb_swap until the page has
-     drawn the frame it published. With a slow card that also halves the game's frame rate (it no longer makes
-     frames nobody sees), so it only pays together with 3;
+  2. the game ran up to PG_NSLOT-1 = 2 frames ahead of the page. PgCtl.ahead (glide_gpu.h, written by the page)
+     says how many it may. 0 (wait for each frame to be drawn) was tried and taken back: it cost the game a
+     refresh of waiting a frame (54 against 64 fps in a race, 68 against 97 in the menus, 144 Hz) and the mouse
+     came no sooner. The page asks for 1;
   3. "Resolution scale: Auto" took what fits the window, up to 4x, whatever the card. Now it steps down while
      the game's frames are drawn under 50 a second (autoscale.ts ScaleGovernor: 40 of 60 frames slow -> one step
      down as a trial; kept and remembered in localStorage porsche.autoscale when the frames came 30 % closer,
@@ -158,8 +158,32 @@ WSL Ubuntu-24.04 (user jd) as /mnt/c/Development/NFSPU:
   Signals that did NOT work for 3: the animation frame after a drawing one being late (it is the one after
   that), and how long the game waits for the page (the page marks a frame done when it is submitted, not when
   the card has drawn it). The frame rate the status line used to show (frames taken a second) hid all of this.
-  Still open: why 100 draws cost this card 14-43 ms (overdraw of the menu's big translucent layers through the
-  uber-shader?); the picture at 1x is 640x480 stretched.
+- The game stuttered at a higher resolution scale (2026-11-15): the fragment shader. One shader did every Glide
+  combine mode, test and fog, reading the modes from the uniform block and branching on them for each pixel,
+  and wrote the depth for each pixel (no early depth test). The card's own clock (timestamp queries, ?probe=gpu)
+  on the Intel GPU, ms for the game's pass, old shader / new / a plain textured fill:
+    menus (640x480, drawn 8 times over):   1x 4.3 / 0.6 / 0.6    2x 19.6 / 3.0 / 3.2    3x 41.8 / 8.8 / 7.1
+    race (1024x768, drawn 2 times over):   1x 8.3 / 0.8 / 0.5    2x 26.1 / 4.4 / 2.0    3x 70.2 / 9.4 / 5.3
+  The pass onto the canvas is 0.5 ms, the page's script 1 ms. Now (glide-gpu.ts WGSL_MAIN): the modes are
+  constants of the pipeline (WGSL overrides, SHADER_MODES/shaderModes: a pipeline for each set of modes, 20-45 in
+  a game), so the compiler drops what a draw does not use; with a z buffer the depth comes from the vertices
+  (fs_z; fs writes it only for a w buffer); and the fog table's entry is worked out instead of searched in a
+  63-step loop for each pixel (that loop was two thirds of a race frame after the first two). Menus at 3x went
+  from 22 to 90 fps (mouse 106 -> 47 ms), a race at 2048x1536 from 27 to 64 fps.
+  The old shader stays as WGSL_UBER for checking: renderer.compare() draws one frame with both on a cleared
+  picture and compares them (menus, the 3D garage, a race: identical, but for 2-3 pixels of a race frame where
+  the depth differs in the last bit). renderer.variant('uber'|'full'|'flat'), gpuTimes() (which modes cover
+  how much of the picture). ?probe=gpu runs the table above 22 s after Play; ?probe=gpu-manual when
+  __gpuProbe() is called in the console (get into a race first).
+  The scale Auto remembers is under a new key (autoscale.ts AUTOSCALE_KEY ends in .2): caps found with the old
+  shader are forgotten. In a race the game itself is the limit now (45-64 fps at any scale up to 3x).
+- The race load froze on a black screen, two times in three on a new player (2026-11-15): one more loop that
+  never gave the guest lock up. Watchdog: tid 1 "holds the GIL: running" at eip 0x533CB7, the file thread
+  (tid 102) "waiting for the GIL", "critical section ... held by tid 1". The loop at 0x533CA1 (read and
+  wait) calls 0x567F70 (is the request to the file thread done?) until it is, inside one of the game's
+  critical sections, and guest_fair_yield does nothing inside a critical section. Override 0x567F70
+  (porsche_hle.c): guest_unlock(); guest_lock(c) first, so the queued threads run. 4 loads of 4 since.
+  When it did not freeze before, the file thread had got the lock before the loop began.
 - Stuck Alt: Chrome on Windows can keep Alt's key up (no blur) -> the game saw Alt held, arrows came as WM_SYSKEYDOWN,
   the car did not move. Patch 9j: on a non-modifier key press, a held Alt/Ctrl/Shift the event says is up is released.
 
@@ -208,7 +232,8 @@ WSL Ubuntu-24.04 (user jd) as /mnt/c/Development/NFSPU:
   verifiable with the browser tool), game resolution ("Thrash Resolution=800x600" in .nfsu2_registry did not change
   the menus' 640x480 frame buffer).
 - The first synthetic key after a game start did not reach the game twice (later ones did): shared input, not looked into.
-- More spin loops of the same kind may exist elsewhere.
+- More spin loops of the same kind may exist elsewhere (found so far: 0x53C2E0, 0x5366E0, 0x567F70). A loop
+  inside one of the game's critical sections needs guest_unlock/guest_lock: guest_fair_yield skips it there.
 - ConvertFile for custom pictures; FEData/Art/pic16.fsh uses code 0x6D (4444), not produced.
 - README.md describes the build for others (own game copy, exact Porsche.exe hash): keep it in step with the
   scripts. Packaging for the user.

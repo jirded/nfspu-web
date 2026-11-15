@@ -44,6 +44,16 @@ void sub_005366e0_orig(CPU *c);
 void guest_fair_yield(void);                                     /* win32_ext.c */
 void sub_005366e0(CPU *c){ guest_fair_yield(); sub_005366e0_orig(c); }
 
+/* 0x567F70 poll(request): looks whether a request to the game's file thread is done.  The read-and-wait
+ * around 0x533CA1 calls it in a loop until it is, with one of the game's critical sections held.  The
+ * file thread (tid 102) needs the guest lock to do the request, and the runtime never hands the lock
+ * over inside a critical section (guest_fair_yield): the loop span for good and the race load stood
+ * still on a black screen, two times in three (the third time the file thread had got the lock before
+ * the loop began).  On Windows the file thread runs beside the loop.  Here each poll lets the threads
+ * that queue for the lock have it first. */
+void sub_00567f70_orig(CPU *c);
+void sub_00567f70(CPU *c){ guest_unlock(); guest_lock(c); sub_00567f70_orig(c); }
+
 /* win32.c: past 250 ms without a frame the game clock runs at real speed (a
  * load: the race's track, the timer ticks the load waits for), instead of the
  * slow creep NFSU2 needs for its busy waits on the way into a race. */

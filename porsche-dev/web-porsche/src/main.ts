@@ -22,6 +22,7 @@ import { gamePanel } from './ui-game';
 import { controlsSheet } from './ui-controls';
 import { SITE } from './keys';
 import { resolve } from './settings';
+import { AUTOSCALE_KEY as AUTOSCALE } from './autoscale';
 import { tell } from './dialogs';
 
 export interface Shell {
@@ -85,7 +86,6 @@ let working: string | null = null;
 /** the display's refresh rate, measured as the page opens */
 let displayHz = 60;
 /** the largest automatic resolution scale this browser's graphics card kept up with (autoscale.ts), kept in this browser */
-const AUTOSCALE = 'porsche.autoscale';
 const autoScaleCap = () => { try { return Math.max(1, Math.min(4, +(localStorage.getItem(AUTOSCALE) ?? 4) || 4)); } catch { return 4; } };
 
 const overlay = new FpsOverlay($('overlay'));
@@ -175,7 +175,7 @@ async function play() {
     const scale = query.get('scale') ? +query.get('scale')! : res.page.resolution_scale === 'auto' ? undefined : +res.page.resolution_scale;
     const g = await startGame({
       module: await moduleP, canvas, audio, env: res.env, scale, log,
-      displayHz, autoScaleCap: autoScaleCap(),
+      displayHz, autoScaleCap: autoScaleCap(), profile: (query.get('probe') ?? '').startsWith('gpu'),
       onAutoScale: cap => { try { localStorage.setItem(AUTOSCALE, String(cap)); } catch { /* storage off */ } },
       trace: query.get('trace') ? query.get('trace')!.split(',').map(Number) : undefined,
       onSaved: path => { if (/^\/?savedata[\\/]/i.test(path)) savedAt = new Date(); },
@@ -186,6 +186,8 @@ async function play() {
     toast('Menu: Home', 4000);
     show(); changed();
     if (query.get('probe') === 'mouse') void mouseProbe(g);
+    if (query.get('probe') === 'gpu') void gpuProbe(g, 22000);
+    if (query.get('probe') === 'gpu-manual') (window as any).__gpuProbe = () => gpuProbe(g, 0);   // run it where you like
     void g.exited.then(code => {
       running = null;
       overlay.set('off', null); toast(null); closeDialogs();
@@ -225,6 +227,30 @@ async function mouseProbe(g: RunningGame) {
         `mouse ${m.medianMs} ms (${m.trials.map((t: any) => t.ms ?? '-').join(' ')}), ${m.trials.map((t: any) => t.gameFrames ?? '-').join(' ')} game frames; canvas ${p.canvas}`);
     toast('Mouse measured: see the log', 4000);
   } catch (e) { log(`[probe] mouse latency: ${e}`); toast(null); }
+}
+
+/** ?probe=gpu (development): 22 s after the game started, what the graphics card needs for a frame of the screen
+ *  that is up, at each size of picture, with the shader before the specialised one, the real one and a trivial one
+ *  (the picture is wrong meanwhile), into the log.  ?probe=gpu-manual: when __gpuProbe() is called in the console. */
+async function gpuProbe(g: RunningGame, after: number) {
+  await new Promise(r => setTimeout(r, after));
+  const rd = g.renderer;
+  if (running !== g || !rd) return;
+  if (!rd.gpuTimes()) { log('[probe] gpu: this browser gives no pass timings (timestamp-query)'); return; }
+  toast('Measuring the graphics card', 0);
+  for (const scale of [1, 2, 3, 4]) for (const v of ['uber', 'full', 'flat'] as const) {
+    rd.scale(scale); rd.variant(v);
+    await new Promise(r => setTimeout(r, 1200));
+    rd.gpuTimes();
+    const f0 = rd.stats().frames, t0 = performance.now();
+    await new Promise(r => setTimeout(r, 2500));
+    const t = rd.gpuTimes()!, fps = (rd.stats().frames - f0) * 1000 / (performance.now() - t0);
+    log(`[probe] gpu ${scale}x ${v}: game pass ${t.mainMs.toFixed(1)} ms, onto the canvas ${t.presentMs.toFixed(1)} ms, ` +
+        `${t.draws.toFixed(0)} draws, picture drawn ${t.overdraw.toFixed(1)} times over, ${fps.toFixed(0)} frames a second (${t.frames} timed)`);
+    if (scale === 1 && v === 'full') for (const m of t.modes) log(`[probe] gpu modes: ${m}`);
+  }
+  rd.variant('full'); rd.scale(undefined);
+  toast('Graphics card measured: see the log', 4000);
 }
 
 async function quit() {

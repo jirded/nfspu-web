@@ -35,7 +35,7 @@ fn argb(c: u32) -> vec4<f32> {
 }
 `;
 
-const WGSL_MAIN = WGSL_COMMON + /* wgsl */`
+const WGSL_UBER = WGSL_COMMON + /* wgsl */`
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var smp: sampler;
 struct VIn { @location(0) a: vec4<f32>, @location(1) b: vec4<f32>, @location(2) c: vec4<f32> };
@@ -159,6 +159,174 @@ struct FOut { @location(0) c: vec4<f32>, @builtin(frag_depth) d: f32 };
 }
 `;
 
+// The main shader, specialised: a draw's combine modes, tests and fog mode are constants of its pipeline
+// (SHADER_MODES below: one pipeline for each set that comes up, a few dozen in a game), so the card's compiler
+// throws away every branch not taken.  The same code with the modes read from the uniform block for each pixel
+// (WGSL_UBER) cost an integrated GPU 6 to 7 times a plain textured fill: 20 ms a menu frame at 1280x960, 43 ms at
+// 1920x1440.  With a z buffer the depth comes from the vertices (fs_z), so the card can reject hidden pixels
+// before it shades them; only a w buffer needs it worked out for each pixel (fs).
+const WGSL_MAIN = WGSL_COMMON + /* wgsl */`
+override CF: u32 = 0u; override CK: u32 = 0u; override CLS: u32 = 0u; override COS: u32 = 0u; override CINV: u32 = 0u;
+override AF: u32 = 0u; override AK: u32 = 0u; override ALS: u32 = 0u; override AOS: u32 = 0u; override AINV: u32 = 0u;
+override TRF: u32 = 0u; override TRK: u32 = 0u; override TAF: u32 = 0u; override TAK: u32 = 0u;
+override TINVC: u32 = 0u; override TINVA: u32 = 0u; override TEX: u32 = 0u;
+override ATEST: u32 = 7u; override DMODE: u32 = 0u; override CHROMA: u32 = 0u; override FOG: u32 = 0u;
+@group(1) @binding(0) var tex: texture_2d<f32>;
+@group(1) @binding(1) var smp: sampler;
+struct VIn { @location(0) a: vec4<f32>, @location(1) b: vec4<f32>, @location(2) c: vec4<f32> };
+struct VOut {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) col: vec4<f32>,
+  @location(1) st: vec3<f32>,
+  @location(2) zw: vec2<f32>,
+};
+@vertex fn vs(v: VIn) -> VOut {
+  var o: VOut;
+  let W = f32(g(58u)); let H = f32(g(59u));
+  // a z buffer's depth is the vertices' own, biased (1, 3); without a depth buffer (0) the game's z may be anything
+  // and must not reach the clipper; with a w buffer (2, 4) the fragment shader writes it
+  var z = 0.5;
+  if (DMODE == 1u || DMODE == 3u) { z = clamp((v.a.z + f32(gi(31u))) / 65535.0, 0.0, 1.0); }
+  o.pos = vec4<f32>(v.a.x / W * 2.0 - 1.0, 1.0 - v.a.y / H * 2.0, z, 1.0);
+  o.col = v.b / 255.0;
+  o.st = v.c.xyz;
+  o.zw = v.a.zw;
+  return o;
+}
+// Glide combine function: f factor, l local, o other, la local alpha
+fn comb(func: u32, f: f32, l: f32, o: f32, la: f32) -> f32 {
+  switch func {
+    case 0u: { return 0.0; }
+    case 1u: { return l; }
+    case 2u: { return la; }
+    case 3u: { return f * o; }
+    case 4u: { return f * o + l; }
+    case 5u: { return f * o + la; }
+    case 6u: { return f * (o - l); }
+    case 7u: { return f * (o - l) + l; }
+    case 8u: { return f * (o - l) + la; }
+    case 9u: { return -f * l + l; }
+    case 16u: { return -f * l + la; }
+    default: { return l; }
+  }
+}
+// factor: lc local channel, la/oa local/other alpha, tc/ta texture channel/alpha
+fn fac(k: u32, lc: f32, la: f32, oa: f32, tc: f32, ta: f32) -> f32 {
+  switch k {
+    case 0u: { return 0.0; } case 1u: { return lc; } case 2u: { return oa; } case 3u: { return la; }
+    case 4u: { return ta; } case 5u: { return tc; } case 8u: { return 1.0; } case 9u: { return 1.0 - lc; }
+    case 10u: { return 1.0 - oa; } case 11u: { return 1.0 - la; } case 12u: { return 1.0 - ta; } case 13u: { return 1.0 - tc; }
+    default: { return 0.0; }
+  }
+}
+fn cmp(func: u32, a: f32, b: f32) -> bool {
+  switch func {
+    case 0u: { return false; } case 1u: { return a < b; } case 2u: { return a == b; } case 3u: { return a <= b; }
+    case 4u: { return a > b; } case 5u: { return a != b; } case 6u: { return a >= b; } default: { return true; }
+  }
+}
+fn wdepth(oow: f32) -> f32 {
+  if (oow <= 0.0) { return 65535.0; }
+  let w = 1.0 / oow;
+  if (w < 1.0) { return 0.0; }
+  let e = floor(log2(w));
+  return min(e * 4096.0 + (w / exp2(e) - 1.0) * 4096.0, 65535.0);
+}
+fn fogtab(k: u32) -> f32 { return f32((g(38u + (k >> 2u)) >> ((k & 3u) * 8u)) & 255u); }
+fn fogw(k: u32) -> f32 { return exp2(3.0 + f32(k >> 2u)) / f32(8u - (k & 3u)); }
+// the fog table's entry k is for w = 2^(k / 4) * 8 / (8 - k % 4): the entry at or below w is worked out, not
+// searched for (a loop over the 64 entries for each pixel of a foggy road was most of a race frame's cost)
+fn fog_w(w: f32) -> f32 {
+  if (w <= 1.0) { return fogtab(0u) / 255.0; }
+  let j = min(u32(floor(log2(w))), 15u);
+  let r = w / exp2(f32(j));
+  let k = j * 4u + u32(r >= 8.0 / 7.0) + u32(r >= 8.0 / 6.0) + u32(r >= 8.0 / 5.0);
+  if (k >= 63u) { return fogtab(63u) / 255.0; }
+  let a = fogw(k); let b = fogw(k + 1u);
+  return mix(fogtab(k), fogtab(k + 1u), clamp((w - a) / (b - a), 0.0, 1.0)) / 255.0;
+}
+// the pixel's colour (a pixel the chroma key or the alpha test rejects is discarded)
+fn shade(i: VOut) -> vec4<f32> {
+  // TMU 0: local = its texel, other = nothing upstream
+  var tx = vec4<f32>(0.0);
+  if (TEX != 0u) {
+    let q = select(1.0, i.st.z, i.st.z != 0.0);
+    let tl = textureSample(tex, smp, i.st.xy / q);
+    tx = vec4<f32>(
+      comb(TRF, fac(TRK, tl.r, tl.a, 0.0, tl.r, tl.a), tl.r, 0.0, tl.a),
+      comb(TRF, fac(TRK, tl.g, tl.a, 0.0, tl.g, tl.a), tl.g, 0.0, tl.a),
+      comb(TRF, fac(TRK, tl.b, tl.a, 0.0, tl.b, tl.a), tl.b, 0.0, tl.a),
+      comb(TAF, fac(TAK, tl.a, tl.a, 0.0, tl.a, tl.a), tl.a, 0.0, tl.a));
+    tx = clamp(tx, vec4<f32>(0.0), vec4<f32>(1.0));
+    if (TINVC != 0u) { tx = vec4<f32>(1.0 - tx.rgb, tx.a); }
+    if (TINVA != 0u) { tx.a = 1.0 - tx.a; }
+  }
+  let it = i.col;
+  let cst = argb(g(16u));
+  let dep = i.zw.x / 65535.0;
+  // colour and alpha combine units
+  let cl = select(select(it, vec4<f32>(dep), CLS == 2u), cst, CLS == 1u);
+  let co = select(select(it, cst, COS == 2u), tx, COS == 1u);
+  let al = select(select(it.a, dep, ALS == 2u), cst.a, ALS == 1u);
+  let ao = select(select(it.a, cst.a, AOS == 2u), tx.a, AOS == 1u);
+  var a = clamp(comb(AF, fac(AK, al, al, ao, tx.a, tx.a), al, ao, al), 0.0, 1.0);
+  if (AINV != 0u) { a = 1.0 - a; }
+  var c = clamp(vec3<f32>(
+    comb(CF, fac(CK, cl.r, al, ao, tx.r, tx.a), cl.r, co.r, al),
+    comb(CF, fac(CK, cl.g, al, ao, tx.g, tx.a), cl.g, co.g, al),
+    comb(CF, fac(CK, cl.b, al, ao, tx.b, tx.a), cl.b, co.b, al)), vec3<f32>(0.0), vec3<f32>(1.0));
+  if (CINV != 0u) { c = 1.0 - c; }
+  // chroma key on the combined colour, alpha test
+  if (CHROMA != 0u) {
+    let k = argb(g(33u) | 0xff000000u).rgb;
+    if (all(round(c * 255.0) == round(k * 255.0))) { discard; }
+  }
+  if (ATEST != 7u) {
+    if (!cmp(ATEST, round(a * 255.0), f32(g(27u)))) { discard; }
+  }
+  // fog
+  if (FOG != 0u) {
+    var f = 0.0;
+    if (FOG == 3u) { f = i.zw.x / 65535.0; } else { f = fog_w(select(65535.0, 1.0 / i.zw.y, i.zw.y > 0.0)); }
+    c = mix(c, argb(g(37u)).rgb, f);
+  }
+  return vec4<f32>(c, a);
+}
+// a w buffer: the depth is worked out for each pixel
+struct FOut { @location(0) c: vec4<f32>, @builtin(frag_depth) d: f32 };
+@fragment fn fs(i: VOut) -> FOut {
+  var o: FOut;
+  o.c = shade(i);
+  o.d = clamp((wdepth(i.zw.y) + f32(gi(31u))) / 65535.0, 0.0, 1.0);
+  return o;
+}
+// a z buffer or none: the vertices' depth
+@fragment fn fs_z(i: VOut) -> @location(0) vec4<f32> { return shade(i); }
+// for measuring only (GlideRenderer.variant): the texel times the vertex colour, no combine, no tests
+@fragment fn fs_flat(i: VOut) -> @location(0) vec4<f32> {
+  let q = select(1.0, i.st.z, i.st.z != 0.0);
+  return textureSample(tex, smp, i.st.xy / q) * i.col;
+}
+`;
+/** the modes a pipeline of the main shader is made for: its override's name and the draw state's word (ne: only
+ *  whether the word is zero counts) */
+const SHADER_MODES: readonly [name: string, word: number, ne?: boolean][] = [
+  ['CF', 0], ['CK', 1], ['CLS', 2], ['COS', 3], ['CINV', 4, true], ['AF', 5], ['AK', 6], ['ALS', 7], ['AOS', 8], ['AINV', 9, true],
+  ['TRF', 10], ['TRK', 11], ['TAF', 12], ['TAK', 13], ['TINVC', 14, true], ['TINVA', 15, true], ['TEX', 17, true],
+  ['ATEST', 26], ['DMODE', 28], ['CHROMA', 32, true], ['FOG', 36],
+];
+/** a draw's modes: the constants of its pipeline, and a key that is the same for the same constants */
+export function shaderModes(st: ArrayLike<number>, o = 0): { key: string; constants: Record<string, number> } {
+  const constants: Record<string, number> = {};
+  let key = '';
+  for (const [name, word, ne] of SHADER_MODES) {
+    const v = ne ? (st[o + word] ? 1 : 0) : st[o + word] >>> 0;
+    constants[name] = v; key += v.toString(36) + '.';
+  }
+  return { key, constants };
+}
+
+
 // clear: a rectangle (x0 y0 x1 y1 in game pixels), colour, depth; W, H at 8, 9
 const WGSL_CLEAR = WGSL_COMMON + /* wgsl */`
 struct VOut { @builtin(position) pos: vec4<f32> };
@@ -229,12 +397,22 @@ export interface GlideRenderer {
   stats(): GlideStats;
   /** the game's picture as a PNG, at the size it is drawn (not the stretched canvas); null when there is none yet */
   shot(): Promise<Blob | null>;
+  /** for checking the shaders against each other: the next frame is drawn twice on a cleared picture, with the
+   *  'uber' shader and with the real one, and the two pictures are compared (colour channels,
+   *  0..255: the mean difference, the largest, and the part of the channels that differ by more than 2) */
+  compare(): Promise<{ mean: number; max: number; differ: number; w: number; h: number } | null>;
   /** draw every frame of the game (false), or only the newest when several wait (the default) */
   skipStale(on: boolean): void;
-  /** how many frames the game may publish ahead of the page's drawing (0, the default: none; at most 2) */
+  /** how many frames the game may publish ahead of the page's drawing (1 by default; 0 to 2) */
   ahead(n: number): void;
   /** the picture's size in times the game's resolution; undefined: what fits the canvas, up to 4 */
   scale(n: number | undefined): void;
+  /** for measuring: 'full' is the real shader; 'uber' the one before it, with every mode read for each pixel (the
+   *  same picture); 'flat' a trivial fragment shader (the picture is wrong) */
+  variant(v: 'full' | 'flat' | 'uber'): void;
+  /** for measuring (GlideOptions.profile): the card's time a frame for the game's pass and for the pass onto the canvas,
+   *  and how many times over the picture's area was drawn, averaged since the last call; null when it cannot be timed */
+  gpuTimes(): { frames: number; mainMs: number; presentMs: number; overdraw: number; draws: number; modes: string[] } | null;
   detach(): void;
 }
 export interface GlideOptions {
@@ -244,6 +422,8 @@ export interface GlideOptions {
   log?: (s: string) => void; trace?: number[]; skipStale?: boolean; ahead?: number;
   /** the display's refresh rate (default 60): what counts as a slow frame depends on it */
   displayHz?: number;
+  /** measure the card's time for each pass (GlideRenderer.gpuTimes): asks for the timestamp-query feature */
+  profile?: boolean;
   /** the largest automatic scale (default 4): what an earlier game came down to */
   autoCap?: number;
   /** the automatic scale came down to `cap` */
@@ -256,7 +436,15 @@ export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, 
   if (!navigator.gpu) throw new Error('this browser has no WebGPU');
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
   if (!adapter) throw new Error('no WebGPU adapter');
-  const device = await adapter.requestDevice();
+  const timed = !!opts.profile && adapter.features.has('timestamp-query');
+  const device = await adapter.requestDevice(timed ? { requiredFeatures: ['timestamp-query'] } : {});
+  // the card's own clock around each pass (profile): four timestamps a frame, read back when the frame is done
+  const qs = timed ? device.createQuerySet({ type: 'timestamp', count: 4 }) : null;
+  const qResolve = timed ? device.createBuffer({ size: 32, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC }) : null;
+  const qRead = timed ? device.createBuffer({ size: 32, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }) : null;
+  let qBusy = false, tMain = 0, tPresent = 0, tN = 0, tArea = 0, tDraws = 0;
+  const tModes = new Map<string, number>();   // the area drawn with each set of shader modes
+  let variant: 'full' | 'flat' | 'uber' = 'full';
   let errors = 0;
   device.addEventListener('uncapturederror', (e: any) => { if (errors++ < 20) log(`[glide-gpu] WebGPU error: ${e.error?.message ?? e}`); });
   const ctx = canvas.getContext('webgpu') as GPUCanvasContext;
@@ -284,7 +472,7 @@ export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, 
     m.getCompilationInfo().then(ci => { for (const msg of ci.messages) log(`[glide-gpu] ${name} shader ${msg.type}: ${msg.message} (line ${msg.lineNum})`); });
     return m;
   };
-  const mMain = mod(WGSL_MAIN, 'main'), mClear = mod(WGSL_CLEAR, 'clear'), mLfb = mod(WGSL_LFB, 'lfb'), mPresent = mod(WGSL_PRESENT, 'present');
+  const mMain = mod(WGSL_MAIN, 'main'), mUber = mod(WGSL_UBER, 'uber'), mClear = mod(WGSL_CLEAR, 'clear'), mLfb = mod(WGSL_LFB, 'lfb'), mPresent = mod(WGSL_PRESENT, 'present');
 
   const samplers = new Map<number, GPUSampler>();
   const ADDR: GPUAddressMode[] = ['repeat', 'clamp-to-edge', 'mirror-repeat'];
@@ -337,15 +525,19 @@ export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, 
     const bs = st[o + S.BLEND_RGB_SRC], bd = st[o + S.BLEND_RGB_DST], as = st[o + S.BLEND_A_SRC], ad = st[o + S.BLEND_A_DST];
     const dm = st[o + S.DEPTH_MODE], df = st[o + S.DEPTH_FUNC] & 7, dw = st[o + S.DEPTH_MASK] ? 1 : 0;
     const mr = st[o + S.MASK_RGB] ? 1 : 0, ma = st[o + S.MASK_A] ? 1 : 0;
-    const key = `m${bs},${bd},${as},${ad},${dm ? 1 : 0},${df},${dw},${mr},${ma},${prim}`;
+    const modes = variant === 'full' ? shaderModes(st, o) : null;
+    const key = `m${variant},${bs},${bd},${as},${ad},${dm ? 1 : 0},${df},${dw},${mr},${ma},${prim},${modes?.key ?? ''}`;
     let p = pipes.get(key);
     if (p) return p;
+    const wbuf = dm === 2 || dm === 4;
+    const module = variant === 'uber' ? mUber : mMain;
+    const constants = variant === 'uber' ? undefined : modes?.constants ?? shaderModes(st, o).constants;
     const blendOn = !(bs === 4 && bd === 0 && as === 4 && ad === 0);
     p = device.createRenderPipeline({ layout: mainLayout, label: key,
-      vertex: { module: mMain, entryPoint: 'vs', buffers: [{ arrayStride: PG_VERT_FLOATS * 4, attributes: [
+      vertex: { module, entryPoint: 'vs', constants, buffers: [{ arrayStride: PG_VERT_FLOATS * 4, attributes: [
         { shaderLocation: 0, offset: 0, format: 'float32x4' }, { shaderLocation: 1, offset: 16, format: 'float32x4' },
         { shaderLocation: 2, offset: 32, format: 'float32x4' }] }] },
-      fragment: { module: mMain, entryPoint: 'fs', targets: [{ format: 'rgba8unorm',
+      fragment: { module, constants, entryPoint: variant === 'flat' ? 'fs_flat' : variant === 'uber' || wbuf ? 'fs' : 'fs_z', targets: [{ format: 'rgba8unorm',
         writeMask: (mr ? GPUColorWrite.RED | GPUColorWrite.GREEN | GPUColorWrite.BLUE : 0) | (ma ? GPUColorWrite.ALPHA : 0),
         blend: blendOn ? { color: { srcFactor: blendFactor(bs, true), dstFactor: blendFactor(bd, false), operation: 'add' },
                            alpha: { srcFactor: blendFactor(as, true), dstFactor: blendFactor(ad, false), operation: 'add' } } : undefined }] },
@@ -420,9 +612,11 @@ export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, 
     if (nvert) device.queue.writeBuffer(vbuf, 0, buf, base + PG_VERT_OFF, nvert * PG_VERT_FLOATS * 4);
     const cmds = new Uint32Array(buf, base + PG_CMD_OFF, cmdBytes >> 2);
     const enc = device.createCommandEncoder();
+    const timing = !!qs && !qBusy;
     const pass = enc.beginRenderPass({
       colorAttachments: [{ view: color!.createView(), loadOp: first ? 'clear' : 'load', clearValue: [0, 0, 0, 1], storeOp: 'store' }],
       depthStencilAttachment: { view: depth!.createView(), depthLoadOp: first ? 'clear' : 'load', depthClearValue: 1, depthStoreOp: 'store' },
+      ...(timing ? { timestampWrites: { querySet: qs!, beginningOfPassWriteIndex: 0, endOfPassWriteIndex: 1 } } : {}),
     });
     first = false;
     const tw = gw * scale, th = gh * scale;
@@ -453,6 +647,17 @@ export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, 
           pass.setBindGroup(1, texGroup(cmds[so + S.TEX], cmds[so + S.FILTER_MIN] & 1, cmds[so + S.FILTER_MAG] & 1, cmds[so + S.CLAMP_S], cmds[so + S.CLAMP_T]));
           pass.draw(count, 1, firstV, 0);
           draws++;
+          if (timing && prim === 0) {            // the triangles' area, in the game's pixels
+            const v = new Float32Array(buf, base + PG_VERT_OFF + firstV * PG_VERT_FLOATS * 4, count * PG_VERT_FLOATS);
+            let area = 0;
+            for (let t = 0; t + 2 < count; t += 3) {
+              const a = t * PG_VERT_FLOATS, b = a + PG_VERT_FLOATS, c2 = b + PG_VERT_FLOATS;
+              area += Math.abs((v[b] - v[a]) * (v[c2 + 1] - v[a + 1]) - (v[c2] - v[a]) * (v[b + 1] - v[a + 1])) / 2;
+            }
+            tArea += area;
+            const m = Object.entries(shaderModes(cmds, so).constants).filter(([, x]) => x).map(([k, x]) => `${k}${x}`).join(' ');
+            tModes.set(m, (tModes.get(m) ?? 0) + area);
+          }
         }
       } else if (op === OP_CLEAR && nb < MAX_BLOCKS) {
         if (traceFrames.has(f)) log(`[trace ${f}] clear ${[...cmds.subarray(a, a + 4)]} argb ${cmds[a + 4].toString(16)} a ${cmds[a + 5]} depth ${cmds[a + 6]} mask ${cmds[a + 7]}${cmds[a + 8]}`);
@@ -496,11 +701,21 @@ export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, 
     // onto the canvas, the game's aspect kept
     const cw = canvas.width, ch = canvas.height;
     const sw = Math.min(cw, ch * gw / gh), sh = sw * gh / gw;
-    const pp = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', clearValue: [0, 0, 0, 1], storeOp: 'store' }] });
+    const pp = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', clearValue: [0, 0, 0, 1], storeOp: 'store' }],
+      ...(timing ? { timestampWrites: { querySet: qs!, beginningOfPassWriteIndex: 2, endOfPassWriteIndex: 3 } } : {}) });
     pp.setViewport((cw - sw) / 2, (ch - sh) / 2, sw, sh, 0, 1);
     pp.setPipeline(presentPipe); pp.setBindGroup(0, presentGroup!); pp.draw(3);
     pp.end();
+    if (timing) { enc.resolveQuerySet(qs!, 0, 4, qResolve!, 0); enc.copyBufferToBuffer(qResolve!, 0, qRead!, 0, 32); }
     device.queue.submit([enc.finish()]);
+    if (timing) {
+      qBusy = true; tDraws += draws;
+      qRead!.mapAsync(GPUMapMode.READ).then(() => {
+        const t = new BigInt64Array(qRead!.getMappedRange().slice(0));
+        qRead!.unmap();
+        tMain += Number(t[1] - t[0]) / 1e6; tPresent += Number(t[3] - t[2]) / 1e6; tN++; qBusy = false;
+      }, () => { qBusy = false; });
+    }
     for (const t of later.splice(0)) t.destroy();
     frames++; drawsLast = draws; vertsLast = nvert;
   }
@@ -513,13 +728,56 @@ export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, 
   ro.observe(canvas);
 
   // ---- every frame the game publishes, in order (each may upload textures), at most a few per animation frame
+  /** the game's picture as it is now: RGBA rows, alpha 255 */
+  async function readTarget(): Promise<{ w: number; h: number; data: Uint8Array } | null> {
+    if (!color || !gw || !gh) return null;
+    const w = gw * scale, h = gh * scale, row = Math.ceil(w * 4 / 256) * 256;   // rows of a copy are 256-byte aligned
+    const buf = device.createBuffer({ size: row * h, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+    try {
+      const enc = device.createCommandEncoder();
+      enc.copyTextureToBuffer({ texture: color }, { buffer: buf, bytesPerRow: row }, [w, h]);
+      device.queue.submit([enc.finish()]);
+      await buf.mapAsync(GPUMapMode.READ);
+      const src = new Uint8Array(buf.getMappedRange()), data = new Uint8Array(w * h * 4);
+      for (let y = 0; y < h; y++) data.set(src.subarray(y * row, y * row + w * 4), y * w * 4);
+      for (let i = 3; i < data.length; i += 4) data[i] = 255;                    // the target's alpha is the game's own business
+      buf.unmap();
+      return { w, h, data };
+    } finally { buf.destroy(); }
+  }
+  type Compared = { mean: number; max: number; differ: number; w: number; h: number } | null;
+  let cmpWant: ((r: Compared) => void) | null = null, cmpBusy = false;
+  /** frame f drawn with the old shader and with the real one, the two pictures compared (GlideRenderer.compare) */
+  async function compareFrame(f: number, want: (r: Compared) => void) {
+    const keep = variant;
+    try {
+      // each on a cleared picture and depth buffer, so that only this frame's own draws are compared
+      variant = 'uber'; first = true; drawFrame(f); const a = await readTarget();
+      variant = 'full'; first = true; drawFrame(f); const b = await readTarget();
+      if (!a || !b || a.data.length !== b.data.length) { want(null); return; }
+      let sum = 0, max = 0, differ = 0, n = 0;
+      for (let i = 0; i < a.data.length; i += 4) for (let k = 0; k < 3; k++) {
+        const d = Math.abs(a.data[i + k] - b.data[i + k]);
+        sum += d; n++; if (d > max) max = d; if (d > 2) differ++;
+      }
+      want({ mean: sum / n, max, differ: differ / n, w: a.w, h: a.h });
+    } catch (e) { log(`[glide-gpu] compare: ${e}`); want(null); }
+    finally {
+      variant = keep; done = f; cmpBusy = false;
+      Atomics.store(ctlI(), C_DONE, f); Atomics.notify(ctlI(), C_DONE);
+    }
+  }
   let done = 0, running = true, skip = opts.skipStale ?? true;
   const gov = new ScaleGovernor(opts.displayHz ?? 60);
   let lastDrawn = 0;
-  Atomics.store(ctlI(), C_AHEAD, opts.ahead ?? 0);
+  // one frame ahead: the game builds its next frame while this one waits for the display's next refresh.  Not
+  // at all (0) cost it a refresh of waiting a frame (54 against 64 frames a second in a race, 68 against 97 in
+  // the menus, on a 144 Hz display) and the mouse came no sooner; two is one more frame that may be stale.
+  Atomics.store(ctlI(), C_AHEAD, opts.ahead ?? 1);
   Atomics.store(ctlI(), C_ATTACHED, 1); Atomics.notify(ctlI(), C_ATTACHED);
   const tick = (now: number) => {
     if (!running) return;
+    if (cmpBusy) { requestAnimationFrame(tick); return; }   // a frame is being drawn twice and read back
     const ready = Atomics.load(ctlI(), C_READY);
     // the automatic scale: frames of the game that come far apart say the card may be behind; a step down that
     // does not bring them closer is taken back (autoscale.ts)
@@ -534,6 +792,7 @@ export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, 
     }
     for (let n = 0; done < ready && n < PG_NSLOT; n++) {
       const f = done + 1;
+      if (cmpWant) { const want = cmpWant; cmpWant = null; cmpBusy = true; void compareFrame(f, want); break; }
       // several frames wait (the game ran ahead of the display): only the newest is seen.  An older one is still
       // drawn when the next builds on its picture; when the next starts by clearing everything, drawing it would
       // only hold the display up (each batch then takes longer, more frames wait, and the picture stays behind).
@@ -551,24 +810,23 @@ export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, 
     skipStale(on) { skip = on; },
     ahead(n) { Atomics.store(ctlI(), C_AHEAD, Math.max(0, Math.min(PG_NSLOT - 1, n | 0))); },
     scale(n) { opts.scale = n; gov.reset(); },
-    async shot() {
-      if (!color || !gw || !gh) return null;
-      const w = gw * scale, h = gh * scale, row = Math.ceil(w * 4 / 256) * 256;   // rows of a copy are 256-byte aligned
-      const buf = device.createBuffer({ size: row * h, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
-      try {
-        const enc = device.createCommandEncoder();
-        enc.copyTextureToBuffer({ texture: color }, { buffer: buf, bytesPerRow: row }, [w, h]);
-        device.queue.submit([enc.finish()]);
-        await buf.mapAsync(GPUMapMode.READ);
-        const src = new Uint8Array(buf.getMappedRange()), img = new ImageData(w, h);
-        for (let y = 0; y < h; y++) img.data.set(src.subarray(y * row, y * row + w * 4), y * w * 4);
-        for (let i = 3; i < img.data.length; i += 4) img.data[i] = 255;           // the target's alpha is the game's own business
-        buf.unmap();
-        const c = new OffscreenCanvas(w, h);
-        c.getContext('2d')!.putImageData(img, 0, 0);
-        return await c.convertToBlob({ type: 'image/png' });
-      } finally { buf.destroy(); }
+    variant(v) { variant = v; },
+    gpuTimes() {
+      if (!qs) return null;
+      const n = tN || 1, px = (gw || 640) * (gh || 480);
+      const modes = [...tModes].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([m, a]) => `${(a / n / px).toFixed(2)}x ${m}`);
+      const r = { frames: tN, mainMs: tMain / n, presentMs: tPresent / n, overdraw: tArea / n / px, draws: tDraws / n, modes };
+      tMain = tPresent = tN = tArea = tDraws = 0; tModes.clear();
+      return r;
     },
+    async shot() {
+      const t = await readTarget();
+      if (!t) return null;
+      const c = new OffscreenCanvas(t.w, t.h);
+      c.getContext('2d')!.putImageData(new ImageData(new Uint8ClampedArray(t.data.buffer as ArrayBuffer), t.w, t.h), 0, 0);
+      return await c.convertToBlob({ type: 'image/png' });
+    },
+    compare() { return new Promise(res => { cmpWant = res; }); },
     detach: () => { running = false; Atomics.store(ctlI(), C_ATTACHED, 0); Atomics.notify(ctlI(), C_ATTACHED); ro.disconnect(); },
   };
 }

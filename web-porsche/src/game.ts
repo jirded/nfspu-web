@@ -27,6 +27,8 @@ export interface GameOptions {
   scale?: number;
   /** for the automatic scale (glide-gpu.ts GlideOptions): the display's rate, the largest scale, and the word when it came down */
   displayHz?: number; autoScaleCap?: number; onAutoScale?(cap: number): void;
+  /** time the card's passes (glide-gpu.ts GlideOptions.profile) */
+  profile?: boolean;
   trace?: number[];
   log(s: string): void;
   /** the game closed a file of the save folder it had written, path relative to it */
@@ -120,7 +122,7 @@ export async function startGame(o: GameOptions): Promise<RunningGame> {
     let renderer: GlideRenderer | null = null, frames: () => number;
     if (first.gpu) {
       const g = renderer = await attachGlide(proc, canvas, { log, scale: o.scale, trace: o.trace,
-        displayHz: o.displayHz, autoCap: o.autoScaleCap, onAutoCap: o.onAutoScale });
+        displayHz: o.displayHz, autoCap: o.autoScaleCap, onAutoCap: o.onAutoScale, profile: o.profile });
       undo.push(() => g.detach());
       frames = () => g.stats().frames;
     } else {

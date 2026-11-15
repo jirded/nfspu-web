@@ -3,6 +3,7 @@
 import type { Shell } from './main';
 import { KEYS, TEMPLATE, get, parse, put, type KeyDef } from './settings';
 import { cacheBytes, clearCache } from './savefs';
+import { AUTOSCALE_KEY } from './autoscale';
 import { ask } from './dialogs';
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<HTMLElementTagNameMap[K]> = {}, ...kids: (Node | string)[]) => {
@@ -18,7 +19,7 @@ export function gamePanel(root: HTMLElement, shell: Shell): { refresh(): Promise
 
   async function set(k: KeyDef, value: string | null) {
     if (readOnly()) return;
-    if (k.key === 'resolution_scale') try { localStorage.removeItem('porsche.autoscale'); } catch { /* storage off */ }   // Auto starts again from what fits
+    if (k.key === 'resolution_scale') try { localStorage.removeItem(AUTOSCALE_KEY); } catch { /* storage off */ }   // Auto starts again from what fits
     text = put(text ?? TEMPLATE, k.key, value);   // from what the panel shows: a second change does not wait for the first's file
     render();                                      // at once; the file follows
     try { await shell.saveSettings(text); }        // tells every panel, this one too

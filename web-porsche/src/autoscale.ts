@@ -10,6 +10,11 @@
 // trial: when the frames do not come closer with it, it is taken back and the picture is left alone.
 // Pure (test/autoscale.test.mjs).
 
+/** where the page keeps the largest scale Auto came down to, in this browser.  The number at its end goes up
+ *  when drawing got cheaper, so that what an earlier version of the page had to settle for is forgotten (2: the
+ *  specialised shader, 6 times less work for the card than the one before). */
+export const AUTOSCALE_KEY = 'porsche.autoscale.2';
+
 /** frames of the game further apart than this are slow (under 50 a second), or than one and a quarter of the
  *  display's refreshes (a 60 Hz display's every refresh, 16.7 ms, is not slow; every other one is) */
 const SLOW_MS = 20;

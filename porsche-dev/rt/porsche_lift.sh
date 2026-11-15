@@ -13,7 +13,7 @@ EXE="${1:-$ROOT/../games/porsche/Porsche.exe}"
 [ -f "$EXE" ] || { echo "Porsche.exe not found: $EXE"; exit 1; }
 mkdir -p out
 .venv/bin/python tools/reloc_dir.py "$EXE" > out/reloc_dir.log 2>&1 || { tail -5 out/reloc_dir.log; exit 1; }
-OVERRIDE=53c2e0,5366e0 X87PC=1 .venv/bin/python tools/genall.py "$EXE" 64 > out/genall.log 2>&1 || { tail -20 out/genall.log; exit 1; }
+OVERRIDE=53c2e0,5366e0,567f70 X87PC=1 .venv/bin/python tools/genall.py "$EXE" 64 > out/genall.log 2>&1 || { tail -20 out/genall.log; exit 1; }
 sed -n '/GENERATION SUMMARY/,/^$/p' out/genall.log
 grep 'override' out/genall.log || true
 .venv/bin/python tools/argcount.py "$EXE" > out/argcount.log 2>&1 || { tail -3 out/argcount.log; exit 1; }
