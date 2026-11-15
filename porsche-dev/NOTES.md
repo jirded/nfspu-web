@@ -195,6 +195,73 @@ WSL Ubuntu-24.04 (user jd) as /mnt/c/Development/NFSPU:
 - Stuck Alt: Chrome on Windows can keep Alt's key up (no blur) -> the game saw Alt held, arrows came as WM_SYSKEYDOWN,
   the car did not move. Patch 9j: on a non-modifier key press, a held Alt/Ctrl/Shift the event says is up is released.
 
+## Three more from playing (2026-11-15)
+- A race's loading screen had the game's first loading picture in its corner (in a mode larger than 640x480).
+  What the game writes through the linear frame buffer is kept on the game's side (glide_gpu.c g_shadow), so a
+  read lock gets it back; the copy was only made anew at the next write, so the first lock in a new mode read
+  the old mode's picture into the new one's corner. glb_open drops it: a new mode starts black.
+- "Exit" (main menu, or quit > exit to windows in a race) left a black screen for good. 0x53BCB0 closes the
+  game's window on the way out: it posts the window's thread (0x53B8D0, a GetMessage loop) the message 0x466 and
+  waits, Sleep(0) after Sleep(0), until that thread has destroyed the window and cleared its handle 0x6B7BF8.
+  The runtime posts no messages (PostMessageA, PostQuitMessage, DestroyWindow are no-ops), so the wait never
+  ended (watchdog: tid 1 in sub_0053bcb0 <- sub_00575930 <- sub_00557120 <- sub_00467740 <- sub_004b6a50).
+  Override 0x53BCB0 clears the handle itself; the game goes on to ExitProcess, the page shows its start page.
+  0x53BCB0 is also called when no window is up (handle 0): nothing to do then.
+- In a race the car looked smooth and the world went by in jerks (not solved to the user's liking yet).
+  What is known:
+  - The race's world moves in steps, 64 a second: the game's timer (0x4A45D0, 128 calls a second) counts
+    0x6559EC 64 times a second, and each pass of the race's loop (0x4152E0) runs 0x414FF0 once for every tick
+    since the pass before, then draws a frame; with no tick passed it draws nothing. So the game makes at most
+    64 frames a second, and a frame shows the world after 1, 2, 3.. steps: nothing in between. A frame that
+    is dropped, or a frame that takes two steps, is a jump of the world; the car stands still in the picture
+    and hides it.
+  - Measured (race at 3058x1080 and 3440x1270, 144 Hz display, Intel GPU): the game needs 11-16 ms for a
+    frame, the card about 10 ms. As it was, frames were shown 7 to 42 ms apart and one in three was dropped
+    as stale (two were ready, the older is not drawn).
+  - Tried and taken out again: every frame for the same number of the display's refreshes ("pacing": the game
+    waited for each frame's turn, ahead 0). In the user's window that worked as meant (48 frames a second,
+    85-99% of them exactly 3 refreshes) and was "not extra smooth": 64 steps a second in 48 frames are 1, 1, 2
+    steps a frame in turn. A beat worked out from the game's own time for a frame ran away (a longer step of
+    the world is more work); the display's refresh measured at the page's start is wrong in a covered window.
+  - As it is now: while a race runs (the game says so: PgCtl.racing, set around 0x4152E0) the page draws
+    every frame, the oldest first, one an animation frame, and drops none; the game may make its next frame
+    while the page draws (PgCtl.go). Each frame carries the game's tick count (PgHeader.step) and the page
+    logs, every 600 frames of a race, "[glide-gpu] a race's frames: N a second; ticks of the game's clock (64 a
+    second) a frame: 1: x%, 2: y%; refreshes a frame stays ...". 1 tick a frame at 64 a second is the best
+    this game can look; on a 144 Hz display those frames stay 2, 2, 2, 3 refreshes.
+  - The automation window's animation frames are held back unevenly (it is often covered), so its numbers say
+    little: read the user's own log (out/web-porsche-browser.log).
+  - The user's window with "every frame is shown" (3440x1270, 144 Hz): where the game makes a frame in under
+    a tick (15.6 ms) it is 63-64 frames a second, 92-96% of them one tick, staying 2 refreshes (71%) or 3 (27%):
+    as good as this game gets. In heavier parts of the track the game needs 18-19 ms: 51-56 frames a second,
+    14-26% of them two ticks. What is left is the game's own speed (the lifted code's work for a frame);
+    PORSCHE_PROF=1 in a race: 95,000 grDrawTriangle calls a second (0.15 s of each second in the call itself),
+    20,000 critical sections a second.
+- Opponents a few car lengths ahead had no wheels and no floor ("the chassis is gone"), in the wide modes. It is
+  the game's level of detail. 0x439F90 picks a car's level each frame: it projects three corners of the car's
+  box, adds the two edges' lengths in pixels, and counts that in 640ths of the picture's width (* 640 / the
+  options' width 0x657A48: the choice is meant not to depend on the resolution). 120 and more is the full
+  model; less goes down through levels 0..6 (car + 0x2C0), and 0x444E00 maps (car detail, level) to a model
+  (table 0x5CDB44, rows of 7: levels 0-3 the full model, 4 model 1, 5 model 5, 6 model 6). The lower models are
+  a shell without a floor, the wheels two flat discs on the side that faces the viewer. In a picture wider
+  than 4:3 a car is as many pixels but fewer 640ths of the width (half as many at 2.7:1), so the shells came
+  twice as near. Override 0x439F90 (porsche_hle.c): in a wide mode the width the cars are counted against is
+  the one a 4:3 picture of that height has, for the time of the call. Seen side by side at 3058x1080, paused
+  just after the start with the opponents 25-60 pixels wide: before, the nearest had its wheels and the others
+  were shells; after, all four have their floors and wheels.
+  The level is still what the game picks at 640x480 for a car of that share of the screen: at 1440 lines a
+  shell is three times the pixels it was meant to be seen at. Counting in real pixels would give the full model
+  far out, and a frame of a race has only 3,000-5,000 triangles now: five full cars more would cost the game
+  the frames it does not have.
+  Two wrong turns on the way: a 16-bit depth buffer "fixed" it in a comparison of two different moments (one
+  had tyre smoke over the wheels); culling was suspected, but the game calls grCullMode once, with "off", and
+  culls for itself. How it was pinned down: renderer.trace() of a paused frame showed one wheel draw of two
+  quads for a far car and none for the other side; the classes' names (rtti.py R3DCarLOD) led to the code.
+- The WebGPU device was lost twice in the automation window ("A valid external Instance reference no longer
+  exists"; the picture goes black or white, the game runs on). No crash report of Chrome, no driver reset in
+  Windows' log, the adapter is there again afterwards. The page logs the loss; it does not recover from it yet
+  (the game would have to send every texture again).
+
 ## The name of the chosen tab was under its red wedge (2026-11-15)
 In the options the chosen tab is a solid red wedge with its name in white; here the wedge had no name.
 - The menus do not draw as they go. Every picture and text goes into a sorted list (0x65B958, a red-black tree;
@@ -277,7 +344,7 @@ sizes behind the player's back (a page setting): the options did not say what wa
    functions without the flag lines), fngrep.sh (functions with a line matching), strref.sh (who names a text),
    flt.sh (the float at an address), dis.sh START END, fnctx.sh (lines around a pattern in functions), fnwr.sh
    (functions with a matching line, in an address range), retof.sh (who makes the call returning to an address),
-   vtab.sh (a vtable's functions), imports.sh. In the browser: __shell.running.memory (read and write the
+   vtab.sh (a vtable's functions), imports.sh, rtti.py CLASS (a class's vtables, through its RTTI name). In the browser: __shell.running.memory (read and write the
    game's memory), __shell.running.renderer.trace() (the next frame's draws with their boxes and depths into the
    log), ?env=GLIDE_TEXLOG=1 (each texture as it is decoded). The scratch script fshinfo.py (not in the repo)
    listed the images of an .fsh file.
@@ -325,7 +392,8 @@ sizes behind the player's back (a page setting): the options did not say what wa
   verifiable with the browser tool), game resolution ("Thrash Resolution=800x600" in .nfsu2_registry did not change
   the menus' 640x480 frame buffer).
 - The first synthetic key after a game start did not reach the game twice (later ones did): shared input, not looked into.
-- More spin loops of the same kind may exist elsewhere (found so far: 0x53C2E0, 0x5366E0, 0x567F70). A loop
+- More spin loops of the same kind may exist elsewhere (found so far: 0x53C2E0, 0x5366E0, 0x567F70; 0x53BCB0
+  waited for a window message). A loop
   inside one of the game's critical sections needs guest_unlock/guest_lock: guest_fair_yield skips it there.
 - ConvertFile for custom pictures; FEData/Art/pic16.fsh uses code 0x6D (4444), not produced.
 - README.md describes the build for others (own game copy, exact Porsche.exe hash): keep it in step with the

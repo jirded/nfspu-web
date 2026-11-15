@@ -17,7 +17,9 @@ export const PG_HOST_KIND = 9;
 const PG_MAGIC = 0x314c4750, PG_NSLOT = 3, PG_CMD_OFF = 64, PG_VERT_OFF = 2 << 20, PG_VERT_FLOATS = 12;
 const OP_CLEAR = 1, OP_DRAW = 2, OP_TEXNEW = 3, OP_TEXFREE = 4, OP_LFB = 5;
 // control block, u32 index
-const C_MAGIC = 0, C_W = 2, C_H = 3, C_READY = 4, C_DONE = 5, C_SLOT = 8, C_ATTACHED = 11, C_AHEAD = 12, C_VIEW_W = 13, C_VIEW_H = 14;
+const C_MAGIC = 0, C_W = 2, C_H = 3, C_READY = 4, C_DONE = 5, C_SLOT = 8, C_ATTACHED = 11, C_AHEAD = 12, C_VIEW_W = 13, C_VIEW_H = 14, C_RACING = 15, C_GO = 16;
+/** the control block's length in words (glide_gpu.h PgCtl) */
+const CTL_WORDS = 17;
 // draw state, u32 index (glide_gpu.h)
 const S = {
   TEX: 17, FILTER_MIN: 18, FILTER_MAG: 19, CLAMP_S: 20, CLAMP_T: 21,
@@ -465,8 +467,8 @@ export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, 
   ctx.configure({ device, format, alphaMode: 'opaque' });
 
   const reg = await proc.registered(PG_HOST_KIND);
-  const ctl = () => new Uint32Array(proc.memory.buffer as unknown as ArrayBuffer, reg.ptr, 16);
-  const ctlI = () => new Int32Array(proc.memory.buffer as unknown as ArrayBuffer, reg.ptr, 16);
+  const ctl = () => new Uint32Array(proc.memory.buffer as unknown as ArrayBuffer, reg.ptr, CTL_WORDS);
+  const ctlI = () => new Int32Array(proc.memory.buffer as unknown as ArrayBuffer, reg.ptr, CTL_WORDS);
   if (ctl()[C_MAGIC] !== PG_MAGIC) throw new Error('the game module has no Glide WebGPU backend (control block magic)');
 
   // ---- resources
@@ -616,6 +618,8 @@ export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, 
     for (const t of later.splice(0)) t.destroy();
     frames++; skipped++;
   }
+  /** the step of the game's world frame f shows (glide_gpu.h PgHeader) */
+  const frameStep = (f: number) => new Uint32Array(proc.memory.buffer as unknown as ArrayBuffer, ctl()[C_SLOT + (f % PG_NSLOT)], 5)[4];
   function drawFrame(f: number) {
     const buf = proc.memory.buffer as unknown as ArrayBuffer;
     const c = ctl();
@@ -785,12 +789,37 @@ export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, 
     } catch (e) { log(`[glide-gpu] compare: ${e}`); want(null); }
     finally {
       variant = keep; done = f; cmpBusy = false;
-      Atomics.store(ctlI(), C_DONE, f); Atomics.notify(ctlI(), C_DONE);
+      Atomics.store(ctlI(), C_DONE, f); letGo(f);
     }
   }
+  /** the game need not wait for frame f any more (glide_gpu.h PgCtl go) */
+  const letGo = (f: number) => { Atomics.store(ctlI(), C_GO, f); Atomics.notify(ctlI(), C_GO); };
   let done = 0, running = true, skip = opts.skipStale ?? true;
   const gov = new ScaleGovernor(opts.displayHz ?? 60);
   let lastDrawn = 0;
+  // A race.  The game moves its world in steps, 64 a second (its ticks), and a frame shows the world as it is
+  // after the newest step: there is nothing in between.  A frame that is not shown is a step that is not seen,
+  // and the world then jumps two: so while the game says a race runs, every frame is drawn, the oldest first and
+  // one at each animation frame, and none is dropped as stale.  (Each frame for the same number of refreshes was
+  // tried: on a 144 Hz display that is 48 frames a second, one or two steps each in turn, which is no smoother.)
+  let raced = false, shownAt = 0, tickAt = 0, shownStep = 0;
+  // the display's refresh: as measured at the page's start, or shorter when the animation frames come faster
+  // (the start's measure is too low in a window that was covered then)
+  let refreshMs = 1000 / ((opts.displayHz ?? 60) >= 50 ? opts.displayHz! : 60), ticks: number[] = [];
+  // for the log, 600 frames of a race at a time: how many refreshes the frames stay and how many steps of the
+  // world each one is
+  const stay = new Map<number, number>(), steps = new Map<number, number>(); let stayN = 0, stayMs = 0;
+  const share = (m: Map<number, number>) => [...m].sort((x, y) => x[0] - y[0]).filter(([, n]) => n * 200 >= stayN)
+    .map(([k, n]) => `${k}: ${Math.round(100 * n / stayN)}%`).join(', ');
+  const raceShown = (ms: number, step: number) => {
+    if (ms > 200) return;                                  // the game loaded, or was paused
+    const k = Math.max(1, Math.round(ms / refreshMs));
+    stay.set(k, (stay.get(k) ?? 0) + 1); steps.set(step, (steps.get(step) ?? 0) + 1); stayN++; stayMs += ms;
+    if (stayN < 600) return;
+    log(`[glide-gpu] a race's frames: ${(1000 * stayN / stayMs).toFixed(0)} a second; ticks of the game's clock (64 a second) a frame: ${share(steps)}; ` +
+        `refreshes a frame stays (${refreshMs.toFixed(1)} ms each): ${share(stay)}`);
+    stay.clear(); steps.clear(); stayN = 0; stayMs = 0;
+  };
   // one frame ahead: the game builds its next frame while this one waits for the display's next refresh.  Not
   // at all (0) cost it a refresh of waiting a frame (54 against 64 frames a second in a race, 68 against 97 in
   // the menus, on a 144 Hz display) and the mouse came no sooner; two is one more frame that may be stale.
@@ -801,6 +830,17 @@ export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, 
     if (!running) return;
     if (cmpBusy) { requestAnimationFrame(tick); return; }   // a frame is being drawn twice and read back
     const ready = Atomics.load(ctlI(), C_READY);
+    const inRace = Atomics.load(ctlI(), C_RACING) === 1;
+    if (inRace !== raced) { raced = inRace; log(raced ? '[glide-gpu] a race: every frame is shown' : '[glide-gpu] the race is over'); }
+    if (tickAt && now - tickAt < 100) {
+      ticks.push(now - tickAt);
+      if (ticks.length === 120) {
+        const r = ticks.sort((x, y) => x - y)[12];          // the missed ones are the long ones
+        ticks = [];
+        if (r > 2 && r < 0.92 * refreshMs) refreshMs = r;
+      }
+    }
+    tickAt = now;
     // the automatic scale: frames of the game that come far apart say the card may be behind; a step down that
     // does not bring them closer is taken back (autoscale.ts)
     if (done < ready && opts.scale === undefined && !document.hidden) {
@@ -812,16 +852,24 @@ export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, 
       } else if (v === 'keep') { log(`[glide-gpu] ${cap}x brought them closer (the graphics card was behind): the picture stays there`); opts.onAutoCap?.(cap); }
       else if (v === 'undo') { log(`[glide-gpu] ${cap}x brought them no closer (it is not the graphics card): back to ${capBefore}x`); cap = capBefore; }
     }
-    for (let n = 0; done < ready && n < PG_NSLOT; n++) {
+    for (let n = 0; done < ready && n < (raced ? 1 : PG_NSLOT); n++) {
       const f = done + 1;
       if (cmpWant) { const want = cmpWant; cmpWant = null; cmpBusy = true; void compareFrame(f, want); break; }
       // several frames wait (the game ran ahead of the display): only the newest is seen.  An older one is still
       // drawn when the next builds on its picture; when the next starts by clearing everything, drawing it would
       // only hold the display up (each batch then takes longer, more frames wait, and the picture stays behind).
-      const stale = skip && f < ready && n + 1 < PG_NSLOT && !traceFrames.has(f) && startsFresh(f + 1);
+      // (in a race every frame is shown: see above)
+      const stale = !raced && skip && f < ready && n + 1 < PG_NSLOT && !traceFrames.has(f) && startsFresh(f + 1);
+      // in a race the game need not wait until this frame is drawn: it may make the next one meanwhile
+      if (raced) letGo(f);
       try { if (stale) takeFrame(f); else drawFrame(f); } catch (e) { if (errors++ < 20) log(`[glide-gpu] frame ${f}: ${e}`); }
-      done = f;
-      Atomics.store(ctlI(), C_DONE, f); Atomics.notify(ctlI(), C_DONE);
+      if (raced) {
+        const step = frameStep(f);
+        if (shownAt && shownStep) raceShown(now - shownAt, (step - shownStep) | 0);
+        shownStep = step;
+      }
+      done = f; shownAt = now;
+      Atomics.store(ctlI(), C_DONE, f); if (!raced) letGo(f);
     }
     requestAnimationFrame(tick);
   };

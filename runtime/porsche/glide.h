@@ -55,6 +55,10 @@ void glb_read_rgb(int x, int y, int w, int h, uint32_t *argb, int stride_px);
 void glb_write_rgb(int x, int y, int w, int h, const uint32_t *argb, int stride_px, const uint8_t *written);
 /* the area the picture is shown in, in device pixels; 0x0: not known */
 void glb_view_size(int *w, int *h);
+/* a race begins (1) or is over (0): every frame of it is shown */
+void glb_racing(int on);
+/* the step of the game's world the frame being made shows (for the viewer's log) */
+void glb_step(uint32_t step);
 
 /* runtime/porsche/glide.c */
 struct CPU;

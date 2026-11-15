@@ -115,8 +115,13 @@ static void prims(const GlState *s, const GlVert *v, int nv, uint32_t prim){
 
 /* ---------------------------------------------------------- glb_* entry points */
 void glb_view_size(int *w, int *h){ *w = ald(&g_ctl.view_w); *h = ald(&g_ctl.view_h); }
+void glb_racing(int on){ ast(&g_ctl.racing, on); }
+static uint32_t g_step;
+void glb_step(uint32_t step){ g_step = step; }
+static void shadow_drop(void);
 void glb_open(int w, int h){
     W = w; H = h; g_ctl.w = (uint32_t)w; g_ctl.h = (uint32_t)h;
+    shadow_drop();
     ensure_init();
 }
 void glb_clear(const GlState *s, uint32_t argb, uint8_t alpha, uint32_t depth){
@@ -163,6 +168,10 @@ void glb_tex_free(int id){
  * movies) is kept here too, so a read lock gets it back; nothing is read
  * back from the GPU. */
 static uint32_t *g_shadow; static int g_sw, g_sh;
+/* a new display mode starts black: what was written through the frame buffer in the mode before (the game's
+ * first loading picture, 640x480) is not in it.  It used to come back in the corner of a larger mode, when the
+ * race's loading screen locked the buffer. */
+static void shadow_drop(void){ free(g_shadow); g_shadow = 0; g_sw = g_sh = 0; }
 void glb_read_rgb(int x, int y, int w, int h, uint32_t *argb, int stride){
     for (int j = 0; j < h; j++) for (int i = 0; i < w; i++){
         int sx = x + i, sy = y + j;
@@ -191,7 +200,7 @@ void glb_write_rgb(int x, int y, int w, int h, const uint32_t *argb, int stride,
 void glb_swap(void){
     ensure_init();
     PgHeader *hd = (PgHeader *)P;
-    hd->frame = (uint32_t)g_frame; hd->ncmd = g_ncmd; hd->cmd_bytes = g_cmd_end - PG_CMD_OFF; hd->nvert = g_nvert;
+    hd->frame = (uint32_t)g_frame; hd->ncmd = g_ncmd; hd->cmd_bytes = g_cmd_end - PG_CMD_OFF; hd->nvert = g_nvert; hd->step = g_step;
     if (!g_registered){ g_registered = 1; nfsu2_register(PG_HOST_KIND, &g_ctl, sizeof g_ctl); }
     ast(&g_ctl.ready, g_frame);
     __builtin_wasm_memory_atomic_notify((int *)&g_ctl.ready, 0xFFFFFFFFu);
@@ -202,6 +211,13 @@ void glb_swap(void){
     if (ahead < 0) ahead = 0; else if (ahead > PG_NSLOT - 1) ahead = PG_NSLOT - 1;
     int32_t next = g_frame + 1, need = g_frame - ahead;
     double t0 = now_ms(); int unlocked = 0;
+    /* how long the game took to make this frame (from the end of the swap before to this one), for the log; a
+     * frame after a stall does not count */
+    static double work_from, work_sum, work_max; static int work_n;
+    if (work_from > 0){
+        double wk = t0 - work_from;
+        if (wk < 250.0){ work_sum += wk; work_n++; if (wk > work_max) work_max = wk; }
+    }
     /* the page must see every frame (textures are uploaded once): at the start, wait for it to attach */
     static int waited_attach;
     if (!waited_attach){
@@ -212,11 +228,11 @@ void glb_swap(void){
         }
         if (!ald(&g_ctl.attached)) fprintf(stderr, "[glide-gpu] no page renderer attached after 20 s: frames are not shown\n");
     }
-    while (ald(&g_ctl.attached) && ald(&g_ctl.done) < need){
+    while (ald(&g_ctl.attached) && ald(&g_ctl.go) < need){
         if (!unlocked){ guest_wait_begin(); unlocked = 1; g_waits++; }
-        int32_t d = ald(&g_ctl.done);
+        int32_t d = ald(&g_ctl.go);
         if (d >= need) break;
-        wait32(&g_ctl.done, d, 100.0);
+        wait32(&g_ctl.go, d, 100.0);
         if (now_ms() - t0 > 2000.0) break;   /* a page that stopped drawing: go on, overwriting */
     }
     if (unlocked) guest_wait_end();
@@ -224,7 +240,12 @@ void glb_swap(void){
     g_frame = next;
     pend_collect();
     slot_begin();
-    if (g_frames % 600 == 1)
+    if (g_frames % 600 == 1){
         fprintf(stderr, "[glide-gpu] frame %d: %u commands, %u vertices; waited for the page %llu times, %.0f ms in all; %llu overflows, %d pixel buffers pending\n",
                 (int)hd->frame, hd->ncmd, hd->nvert, (unsigned long long)g_waits, g_wait_ms, (unsigned long long)g_overflow, g_npend);
+        if (work_n) fprintf(stderr, "[glide-gpu] the game's work a frame: %.1f ms on average, %.1f at most%s\n",
+                            work_sum / work_n, work_max, ald(&g_ctl.racing) ? " (a race)" : "");
+        work_sum = work_max = 0; work_n = 0;
+    }
+    work_from = now_ms();
 }

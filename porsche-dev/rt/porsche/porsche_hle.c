@@ -164,12 +164,15 @@ void sub_00467fc0(CPU *c){
 /* 0x4152E0 runs a race, from making its views to its end.  The game's own "wide screen" option (0x657D5C: the
  * view is a band with bars above and below it, the dials in the bars) makes a 4:3 picture look wide.  A race
  * in a picture that is wide gets no bars: the option is off while the race runs. */
+void glb_racing(int on);                                         /* porsche_web/glide_gpu.c: the race's frames are paced */
 void sub_004152e0_orig(CPU *c);
 void sub_004152e0(CPU *c){
     uint32_t w = MR32(CUR_MODE + 4u), h = MR32(CUR_MODE + 8u), bars = MR32(0x657d5cu);
     int wide = h && w * 3u > h * 4u + 12u;
     if (wide) MR32(0x657d5cu) = 0;
+    glb_racing(1);
     sub_004152e0_orig(c);
+    glb_racing(0);
     if (wide) MR32(0x657d5cu) = bars;
 }
 
@@ -198,6 +201,19 @@ void sub_005a0fbf(CPU *c){
     sub_005a0fbf_orig(c);
 }
 
+/* ---- "Exit" ends the game ----
+ *
+ * 0x53BCB0 closes the game's window on the way out: it posts the window's thread (0x53B8D0, a message loop)
+ * the message 0x466 and waits, Sleep(0) after Sleep(0), until that thread has destroyed the window and
+ * cleared its handle (0x6B7BF8).  The runtime has no window to destroy and posts no messages, so the wait
+ * never ended: after "exit" and "ok" the screen stayed black and the game never reached ExitProcess.  The
+ * handle is cleared here, as the window's thread would have; the rest of the game's way out runs as it is. */
+void sub_0053bcb0_orig(CPU *c);
+void sub_0053bcb0(CPU *c){
+    if (MR32(0x6b7bf8u)){ fprintf(stderr, "[exit] the game closes its window: on to its exit\n"); MR32(0x6b7bf8u) = 0; }
+    sub_0053bcb0_orig(c);
+}
+
 /* ---- The menus' pictures and texts come out in the order the game meant ----
  *
  * The menus do not draw as they go: every picture and text is put into a sorted list (0x65B958, a tree) and the
@@ -219,6 +235,24 @@ void sub_004d9450(CPU *c){
     else r = MR32(a + 0xcu) < MR32(b + 0xcu);
     c->eax = r;
     POP32(c->eip); c->esp += 4u;
+}
+
+/* 0x439F90 picks a car's level of detail for this frame, __thiscall on the car.  It measures the car on the
+ * screen (three corners of its box projected, the two edges' lengths in pixels added) and counts that in
+ * 640ths of the picture's width (* 640 / the options' width, 0x657A48), so that the choice does not depend
+ * on the resolution: 120 and more is the full model, less goes down through six levels; from level 4 on the
+ * car is a shell without a floor, its wheels flat discs on the side that faces the viewer.
+ * In a picture wider than 4:3 a car is the same number of pixels but fewer 640ths of the width (at 2.7:1
+ * half as many), so opponents a few car lengths ahead were already those shells: "the chassis is gone".
+ * Here a wide picture's cars are counted in 640ths of the width a 4:3 picture of that height has: the level of
+ * detail is what it is in 4:3. */
+void sub_00439f90_orig(CPU *c);
+void sub_00439f90(CPU *c){
+    uint32_t w = MR32(CUR_MODE + 4u), h = MR32(CUR_MODE + 8u), cfg = MR32(CFG_W);
+    int wide = h && w * 3u > h * 4u + 12u && cfg == w;
+    if (wide) MR32(CFG_W) = h * 4u / 3u;
+    sub_00439f90_orig(c);
+    if (wide) MR32(CFG_W) = cfg;
 }
 
 /* 0x5391B0 perspective(angle across in degrees, aspect, near, far), __thiscall, pops 16: makes the projection

@@ -15,6 +15,11 @@
  *                  may be stale by the time it is shown.
  *   i32 view_w, view_h   the area the page shows the picture in, in device pixels (the page writes them; 0: not
  *                  known).  The wide display modes are made to fit it (runtime/porsche/porsche_hle.c).
+ *   i32 racing     1 while a race runs (the game writes it): the page then shows every frame, one at each
+ *                  refresh of the display at the most, and drops none (each is a step of the race's world)
+ *   i32 go         the newest frame the game need not wait for any more (the page writes it and notifies): `done`
+ *                  as a rule; in a race the frame the page has begun to draw, so that the game makes the next
+ *                  frame while the page draws this one (the frame's memory stays the page's until `done`)
  *
  * A frame's packet: a header, the commands from PG_CMD_OFF, the vertices
  * from PG_VERT_OFF (PG_VERT_FLOATS floats each).  Commands: u32 op, u32 size
@@ -39,9 +44,12 @@ typedef struct {
     int32_t  attached;
     int32_t  ahead;
     int32_t  view_w, view_h;
+    int32_t  racing;
+    int32_t  go;
 } PgCtl;
 
-typedef struct { uint32_t frame, ncmd, cmd_bytes, nvert; } PgHeader;
+/* step: a count the game keeps of its world's steps (Porsche: its clock's ticks, 64 a second), for the page's log */
+typedef struct { uint32_t frame, ncmd, cmd_bytes, nvert, step; } PgHeader;
 
 enum { PG_OP_CLEAR = 1, PG_OP_DRAW = 2, PG_OP_TEXNEW = 3, PG_OP_TEXFREE = 4, PG_OP_LFB = 5 };
 /* CLEAR:   x0 y0 x1 y1, argb, alpha, depth (0..65535), mask_rgb, mask_depth

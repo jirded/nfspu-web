@@ -395,15 +395,17 @@ int glide_call(CPU *c, const char *name, uint32_t *out){
         glb_clear(&g_st, to_argb(A(c, 0)), (uint8_t)A(c, 1), A(c, 2));
     }
     else if (!strcmp(n, "grBufferSwap")){
+        /* the stall watchdog (watchdog.c) counts presents: no frame for a while, a report of every guest thread */
+        { void watchdog_on_present(void); watchdog_on_present(); }
+        glb_step(MR32(0x6559ecu));   /* the game's own clock, 64 ticks a second (0x4A45D0): a race's world moves by it */
+        glb_swap(); g_frames++;
         /* the game's clock (win32.c's virtual clock: QueryPerformanceCounter,
          * timeGetTime) moves on a frame at every present; NFSU2 ticks it from
          * its Direct3D 9 Present, Porsche presents here.  Without it the clock
          * only crept forward through its safety valve and every animation ran
-         * at a fraction of its speed. */
+         * at a fraction of its speed.  After the swap, which may wait for the page: a frame's time starts
+         * when the game goes on. */
         { void vclock_tick(void); vclock_tick(); }
-        /* the stall watchdog (watchdog.c) counts presents: no frame for a while, a report of every guest thread */
-        { void watchdog_on_present(void); watchdog_on_present(); }
-        glb_swap(); g_frames++;
         if (g_log || (g_frames % 300) == 1) fprintf(stderr, "[glide] frame %llu: %llu triangles so far, %llu texture decodes\n",
             (unsigned long long)g_frames, (unsigned long long)g_tris, (unsigned long long)g_tex_decodes); }
     else if (!strcmp(n, "grRenderBuffer")){ GLOG("grRenderBuffer(%u)\n", A(c, 0)); }
