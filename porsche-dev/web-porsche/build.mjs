@@ -21,5 +21,5 @@ await esbuild.build({
   outdir: DIST, bundle: true, format: 'esm', target: ['chrome140', 'firefox145'], sourcemap: true,
   minify: !process.env.NOMINIFY, logLevel: 'info', loader: { '.txt': 'text', '.png': 'dataurl' },
 });
-fs.copyFileSync(path.join(here, 'index.html'), path.join(DIST, 'index.html'));
+for (const f of ['index.html', 'style.css', 'mouse-latency.js']) fs.copyFileSync(path.join(here, f), path.join(DIST, f));
 console.log('page built: web-porsche/dist');

@@ -3,33 +3,67 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Porsche Unleashed Recompiled</title>
-<style>
-  :root { color-scheme: dark; --bg: #0b0b0c; --fg: #e8e6e3; --mute: #8d8a85; --accent: #c8102e; --panel: #151517; }
-  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, sans-serif; }
-  body { display: flex; flex-direction: column; }
-  header { display: flex; align-items: center; gap: 16px; padding: 10px 16px; background: var(--panel); flex-wrap: wrap; }
-  h1 { font-size: 16px; margin: 0; font-weight: 600; }
-  #status { color: var(--mute); flex: 1; min-width: 200px; }
-  button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 8px 18px; font: inherit; font-weight: 600; cursor: pointer; }
-  button:disabled { opacity: .5; cursor: default; }
-  button.ghost { background: transparent; border: 1px solid #444; color: var(--fg); font-weight: 400; }
-  main { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; padding: 8px; }
-  #screen { background: #000; image-rendering: auto; max-width: 100%; max-height: 100%; aspect-ratio: 4 / 3; height: 100%; outline: none; }
-  #log { display: none; margin: 0; padding: 8px 16px; height: 30vh; overflow: auto; background: #000; color: #9fd29f; font: 12px/1.35 ui-monospace, monospace; white-space: pre-wrap; }
-  body.showlog #log { display: block; }
-</style>
+<title>Porsche Unleashed</title>
+<link rel="stylesheet" href="/style.css">
 <script type="module" src="/main.js"></script>
 </head>
 <body>
-<header>
-  <h1>Porsche Unleashed Recompiled</h1>
-  <span id="status">Loading.</span>
-  <button id="play" disabled>Play</button>
-  <button id="full" class="ghost">Full screen</button>
-  <button id="logbtn" class="ghost">Log</button>
-</header>
-<main><canvas id="screen" width="640" height="480" tabindex="0"></canvas></main>
-<pre id="log"></pre>
+
+<div id="start"><div class="wrap">
+  <header class="top">
+    <div>
+      <h1>porsche unleashed</h1>
+      <p class="sub">Fan project. Not affiliated with or endorsed by Electronic Arts or Porsche.</p>
+    </div>
+    <button class="btn" id="show-log" type="button">log</button>
+  </header>
+
+  <div class="cols">
+    <div class="left">
+      <section class="panel" id="play-card" aria-label="Play"></section>
+      <section class="panel" id="about" aria-label="About">
+        <h3>about</h3>
+        <p>Need for Speed: Porsche Unleashed (2000) in the browser. The PC game's own code, translated ahead of time and
+          compiled to WebAssembly; its Glide renderer drawn with WebGPU.</p>
+        <p>You bring your own copy of the game: this page holds none of its code or data. Saves stay in this browser.</p>
+        <h3>credits</h3>
+        <p>Built on <a href="https://github.com/th0mk/nfsu2-web" target="_blank" rel="noopener">nfsu2-web</a> by th0mk, itself
+          built on Talha M&uuml;derriso&#287;lu's NFSU2Recomp. MIT licence.
+          <a href="https://github.com/jirded/nfspu-web" target="_blank" rel="noopener">Source</a>.</p>
+      </section>
+    </div>
+    <section class="panel right">
+      <div class="tabs" id="tabs" role="tablist" aria-label="Sections">
+        <button class="tab" role="tab" type="button" id="tab-saves" aria-controls="panel-saves">saves</button>
+        <button class="tab" role="tab" type="button" id="tab-game" aria-controls="panel-game">game</button>
+        <button class="tab" role="tab" type="button" id="tab-controls" aria-controls="panel-controls">controls</button>
+      </div>
+      <div id="panel-saves" role="tabpanel" aria-labelledby="tab-saves"></div>
+      <div id="panel-game" role="tabpanel" aria-labelledby="tab-game" hidden></div>
+      <div id="panel-controls" role="tabpanel" aria-labelledby="tab-controls" hidden></div>
+    </section>
+  </div>
+</div></div>
+
+<div id="stage">
+  <canvas id="screen" width="640" height="480" tabindex="0"></canvas>
+  <div id="overlay" hidden></div>
+  <div id="toast" hidden></div>
+</div>
+
+<dialog id="menu"></dialog>
+<dialog id="ctldlg" class="wide">
+  <div id="ctl-sheet"></div>
+  <div class="actions"><button class="btn" id="ctl-close" type="button">Close</button></div>
+</dialog>
+<dialog id="logdlg" class="wide">
+  <h2>log</h2>
+  <pre id="log"></pre>
+  <div class="actions">
+    <button class="btn" id="log-download" type="button">Download log</button>
+    <button class="btn" id="log-close" type="button">Close</button>
+  </div>
+</dialog>
+
 </body>
 </html>

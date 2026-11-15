@@ -1,4 +1,4 @@
-# NFS Porsche Unleashed in the browser: project notes (state 2026-10-31)
+# NFS Porsche Unleashed in the browser: project notes (state 2026-11-15)
 
 Goal: run NFS Porsche Unleashed (Porsche.exe v3.5) in the browser the way nfsu2.xyz runs NFSU2:
 static recompilation x86 -> C -> wasm, Glide drawn with WebGPU, sound and input through the
@@ -57,9 +57,18 @@ WSL Ubuntu-24.04 (user jd) as /mnt/c/Development/NFSPU:
   9e PORSCHE_PROF=1 import wall-time profile | 9f GetAsyncKeyState + mouse buttons |
   9g key/button release waits 2 frames after its press | 9h fileio_resolve_write |
   9i virtual clock at real speed in long stalls | 9j release stuck modifiers (Alt).
-- web-porsche/ -> repo web-porsche/: index.html; src/main.ts (page: startProcess, audio, input, ticker worker,
-  WebGPU or software; URL options ?env=K=V, ?wasm=, ?trace=, ?scale=; log POST /log); src/glide-gpu.ts (WebGPU
-  renderer, WGSL uber-shader, pipeline cache); src/ticker.ts; build.mjs (esbuild); server.mjs (Node server).
+- web-porsche/ -> repo web-porsche/ (webpage.sh copies and builds): the start page (2026-11-15; design and plan in
+  specs/2026-11-15-start-page-*.md).  index.html + style.css (the "garage" look, all CSS, no images);
+  src/main.ts = the shell (boot, checks, the one-tab lock, start page <-> game, the page's keys, URL options
+  ?env=K=V, ?wasm=, ?trace=, ?scale=; log POST /log; window.__shell for checks);
+  src/game.ts = one run of the game (startProcess, ticker worker, audio, input, WebGPU or software picture; ends
+  the workers when the game exits); src/ui-play.ts, ui-saves.ts, ui-game.ts, ui-controls.ts, ui-menu.ts = one
+  panel each; src/settings.ts (settings.ini: keys, parse, put, resolve), savefs.ts (OPFS save folder + data cache),
+  profiles.ts (which files are a player), backup.ts + zip.ts, keys.ts (the game's and the page's keys), overlay.ts,
+  dialogs.ts, logs.ts, display.ts, instance.ts; src/glide-gpu.ts (WebGPU renderer, WGSL uber-shader, pipeline
+  cache, shot() = the picture as PNG, the automatic scale); src/autoscale.ts (when Auto draws the picture
+  smaller); src/ticker.ts; test/*.test.mjs (unit tests of the pure modules); mouse-latency.js (a probe, see
+  "Root causes": ?probe=mouse); build.mjs (esbuild); server.mjs (Node server).
 
 ## Build and run
 - Lift Porsche.exe (only when overrides or the lifter change, ~30 s): tools/porsche_lift.sh [Porsche.exe]
@@ -72,7 +81,12 @@ WSL Ubuntu-24.04 (user jd) as /mnt/c/Development/NFSPU:
   run4.sh = headless run with PNG frames.
 - Wasm: webbuild.sh (install_rt + tools/porsche_web_build.sh) -> out/web/porsche.wasm
   (~2 min when every shard rebuilds, i.e. after a lift; seconds for runtime-only changes).
-- Page: webpage.sh (copies web-porsche into the repo, runs node web-porsche/build.mjs).
+- Page: webpage.sh (copies web-porsche into the repo, runs node web-porsche/build.mjs). Unit tests: pagetest.sh
+  (copy, then node --test web-porsche/test/*.test.mjs; 30 tests).
+- Test server: testserver.sh start|run|stop = a second server on http://127.0.0.1:8081/ (stopped by PID only;
+  server_stop.sh's pkill would also take the user's server). Its page log is out/test-browser.log (tlog.sh [N]
+  [pattern], tlogafter.sh PATTERN [N]). Browser checks run there (or at http://localhost:8081/, one more origin),
+  never at http://localhost:8080/: each origin has its own saves, data cache and one-tab lock.
 - Server: cd /mnt/c/Development/NFSPU/porsche-web && /mnt/c/Development/NFSPU/tools/node/bin/node web-porsche/server.mjs --data /mnt/c/Development/NFSPU/games/porsche --port 8080
   -> http://localhost:8080/ . Stop with server_stop.sh. The page log goes to /mnt/c/Development/NFSPU/porsche-web/out/web-porsche-browser.log
   (each page load has a 4-character prefix; blog.sh [N] [exclude-regex] shows the newest page).
@@ -87,6 +101,10 @@ WSL Ubuntu-24.04 (user jd) as /mnt/c/Development/NFSPU:
 - Browser (Chrome, WebGPU): boot, intro, profile select, menus, 3D garage, quick race on Cote d Azur at ~55-61 fps
   with HUD, opponents and sound. Mouse works. Keyboard verified with synthetic keys (throttle, reverse, left, right);
   the user also drove it by hand.
+- Start page (2026-11-15): Play card with states, Saves (players, backup, restore, screenshots), Game (4 settings,
+  game data, settings.ini), Controls; while playing Home = page menu, End = frame-rate counter, Insert =
+  screenshot (the game uses F1-F12 itself: its "predefined keys"), Quit game from the menu. Checked in Chrome at
+  the test origin; not checked: full screen (Chrome refuses it in the automation window: "not granted").
 - Native headless: renders the menus (software rasterizer).
 
 ## Root causes fixed (patterns to remember)
@@ -106,6 +124,31 @@ WSL Ubuntu-24.04 (user jd) as /mnt/c/Development/NFSPU:
   reads for more than 2 ms, unlock + 1 ms sleep) and 0x5366E0 (jobs runner: guest_fair_yield first). Loops seen:
   0x53C380 wait(ticks), 0x4A88A0 (640 ticks during the race load), the race loop around 0x4154D4.
   The same starvation truncated a profile save (4OGD.sav) earlier.
+- The cursor lagged 100-250 ms behind the mouse (2026-11-15), and the picture was shown at 9-34 frames a second
+  while the status said 50-60: the graphics card was behind. Measured on the user's Intel GPU, 144 Hz display, with
+  the probe (open the page with ?probe=mouse, Play, keep the mouse still; after 22 s it times the animation
+  frames and the delay from a pointer move to the frame that shows it, into the log as "[probe] ..."):
+    picture at 3x (1920x1440, what Auto chose for the window): a frame every 43 ms, mouse 106 ms
+    at 2x: every 26 ms, mouse 79 ms;   at 1x: every 14 ms (the game's own 66-70 fps), mouse 27-31 ms
+  The page's script took 1 ms a frame: no long tasks, all of it the card. Three things were wrong:
+  1. the page drew every queued frame of the game, up to 3 an animation frame, though only the last is seen:
+     each batch took 3 frames' time, 3 more queued meanwhile, and it stayed there. Now, when several wait, the
+     older ones are only taken (their textures) if the next starts by clearing the whole picture (glide-gpu.ts
+     startsFresh/takeFrame; GlideRenderer.skipStale);
+  2. the game ran up to PG_NSLOT-1 = 2 frames ahead of the page: every frame ahead is one the input is late by.
+     PgCtl.ahead (glide_gpu.h, written by the page, default 0): the game waits in glb_swap until the page has
+     drawn the frame it published. With a slow card that also halves the game's frame rate (it no longer makes
+     frames nobody sees), so it only pays together with 3;
+  3. "Resolution scale: Auto" took what fits the window, up to 4x, whatever the card. Now it steps down while
+     the game's frames are drawn under 50 a second (autoscale.ts ScaleGovernor: 40 of 60 frames slow -> one step
+     down as a trial; kept and remembered in localStorage porsche.autoscale when the frames came 30 % closer,
+     taken back for good otherwise: a slow game or a held-back window is not the card). Choosing a scale in the
+     Game tab clears what was remembered.
+  Signals that did NOT work for 3: the animation frame after a drawing one being late (it is the one after
+  that), and how long the game waits for the page (the page marks a frame done when it is submitted, not when
+  the card has drawn it). The frame rate the status line used to show (frames taken a second) hid all of this.
+  Still open: why 100 draws cost this card 14-43 ms (overdraw of the menu's big translucent layers through the
+  uber-shader?); the picture at 1x is 640x480 stretched.
 - Stuck Alt: Chrome on Windows can keep Alt's key up (no blur) -> the game saw Alt held, arrows came as WM_SYSKEYDOWN,
   the car did not move. Patch 9j: on a non-modifier key press, a held Alt/Ctrl/Shift the event says is up is released.
 
@@ -125,7 +168,16 @@ WSL Ubuntu-24.04 (user jd) as /mnt/c/Development/NFSPU:
   done (321,400).
 - Keys: dispatch KeyboardEvent on the focused #screen; synthetic keys are only flagged in the key log.
 - The game pauses when the window blurs or the page is hidden (log: app: deactivated).
-- Tabs share the OPFS save folder porsche-save: do not run two games at once. The user may be playing in another tab.
+- Tabs share the OPFS save folder porsche-save; the page's one-tab lock (Web Lock "porsche-saves") lets only one
+  tab of an origin start the game. The user may be playing in another tab: test at the test origin (above).
+- The automation window is often occluded: requestAnimationFrame is throttled, the game shows 2-5 fps and a
+  click needs a long hold (move, 800 ms, down, 1000 ms, up, 2 s). With the window in front it is 50-80 fps.
+- Do not open extra tabs with the tool and close the older one: the remaining tab fell out of the tool's group
+  once and kept the lock (it had to be closed by hand).
+- More menu points (game coordinates): select a player in "select user" (297,239), continue (322,402), options
+  (498,466), there: controllers (216,11), advanced controls (451,76), predefined keys (532,118); in "create
+  player" click the name box (360,169) before typing; the error box's OK (322,262).
+- Page state for checks: window.__shell (owner, running, fs, log.tail(n), quit()).
 - Do not take the user's own play for a test result: verify with controlled input and the key log.
 
 ## Open items / ideas
@@ -133,6 +185,23 @@ WSL Ubuntu-24.04 (user jd) as /mnt/c/Development/NFSPU:
   and create a new one. Test profile TEST exists in OPFS (can be removed).
 - Not tested: a race to the finish, other tracks and modes (career, knockout, factory driver), replays, options,
   gamepad/wheel, multiplayer (Winsock), long sessions, weaker machines, Firefox/Safari.
+- BUG (runtime, found 2026-11-15, not fixed): on a fresh save folder the first "create player" ends with "there was
+  an error trying to create that player"; the second attempt works. Log: after CopyFile -> <NAME>1.hud the game
+  calls DeleteFileA on SaveData/XXhud1XX.hud, which then exists only in the read-only game folder, and rewrites
+  XXhud1XX/2XX.hud into the save folder; the next attempt passes. Hypothesis: DeleteFileA of a file that is only
+  in the game folder reports failure (runtime/fileio.c has no whiteouts).
+- The game ignores WM_CLOSE (no close box; "WM_CLOSE ignored, re-posting every second"): Quit game relies on the
+  runtime's forced exit after NFSU2_QUIT_GRACE (the page sets 2 s), which waits for open save files. EXIT 0.
+- A player is SaveData/<digit><NAME>.sav (the digit = the portrait chosen) + <NAME>1.hud + <NAME>2.hud; player.lst
+  names the current one; the name is also inside the .sav, so the page has no Rename. The game also lists the
+  players of the served game folder's SaveData (OGD), shown on the page as "from the game folder".
+- The save folder also holds copies of game data the game opens for writing (FEData/controls/*.ctr, gamedata/...):
+  a backup leaves them out (profiles.ts isSave).
+- Game-tab candidates left out: movies (NOMOVIES knows only NFSU2's formats; Porsche's .mad are not opened at all),
+  keep running in the background (NFSU2_BACKGROUND=run exists, but the picture needs requestAnimationFrame; not
+  verifiable with the browser tool), game resolution ("Thrash Resolution=800x600" in .nfsu2_registry did not change
+  the menus' 640x480 frame buffer).
+- The first synthetic key after a game start did not reach the game twice (later ones did): shared input, not looked into.
 - More spin loops of the same kind may exist elsewhere.
 - ConvertFile for custom pictures; FEData/Art/pic16.fsh uses code 0x6D (4444), not produced.
 - README.md describes the build for others (own game copy, exact Porsche.exe hash): keep it in step with the

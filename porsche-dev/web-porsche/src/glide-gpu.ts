@@ -9,13 +9,14 @@
 // depth test and the colour mask are the pipeline's fixed functions.
 // The game's frame buffer is an offscreen target at `scale` times the game's
 // resolution, shown on the canvas at the end of each frame.
+import { ScaleGovernor } from './autoscale';
 import type { GameProcess } from '../../web/src/host/process';
 
 export const PG_HOST_KIND = 9;
 const PG_MAGIC = 0x314c4750, PG_NSLOT = 3, PG_CMD_OFF = 64, PG_VERT_OFF = 2 << 20, PG_VERT_FLOATS = 12;
 const OP_CLEAR = 1, OP_DRAW = 2, OP_TEXNEW = 3, OP_TEXFREE = 4, OP_LFB = 5;
 // control block, u32 index
-const C_MAGIC = 0, C_W = 2, C_H = 3, C_READY = 4, C_DONE = 5, C_SLOT = 8, C_ATTACHED = 11;
+const C_MAGIC = 0, C_W = 2, C_H = 3, C_READY = 4, C_DONE = 5, C_SLOT = 8, C_ATTACHED = 11, C_AHEAD = 12;
 // draw state, u32 index (glide_gpu.h)
 const S = {
   TEX: 17, FILTER_MIN: 18, FILTER_MAG: 19, CLAMP_S: 20, CLAMP_T: 21,
@@ -215,9 +216,39 @@ function blendFactor(f: number, isSrc: boolean): GPUBlendFactor {
 const CMP: GPUCompareFunction[] = ['never', 'less', 'equal', 'less-equal', 'greater', 'not-equal', 'greater-equal', 'always'];
 const TOPO: GPUPrimitiveTopology[] = ['triangle-list', 'line-list', 'point-list'];
 
-export interface GlideStats { frames: number; drawsLast: number; vertsLast: number; textures: number; pipelines: number; errors: number }
-export interface GlideRenderer { stats(): GlideStats; detach(): void }
-export interface GlideOptions { scale?: number; log?: (s: string) => void; trace?: number[] }
+export interface GlideStats {
+  /** the game's frames taken so far, drawn or skipped */
+  frames: number;
+  /** of those, the ones not drawn: a newer frame that starts by clearing the whole picture was already waiting */
+  skipped: number;
+  /** the picture is drawn at this many times the game's resolution */
+  scale: number;
+  drawsLast: number; vertsLast: number; textures: number; pipelines: number; errors: number;
+}
+export interface GlideRenderer {
+  stats(): GlideStats;
+  /** the game's picture as a PNG, at the size it is drawn (not the stretched canvas); null when there is none yet */
+  shot(): Promise<Blob | null>;
+  /** draw every frame of the game (false), or only the newest when several wait (the default) */
+  skipStale(on: boolean): void;
+  /** how many frames the game may publish ahead of the page's drawing (0, the default: none; at most 2) */
+  ahead(n: number): void;
+  /** the picture's size in times the game's resolution; undefined: what fits the canvas, up to 4 */
+  scale(n: number | undefined): void;
+  detach(): void;
+}
+export interface GlideOptions {
+  /** the picture's size in times the game's resolution; undefined: automatic (what fits the canvas, at most autoCap,
+   *  and a step smaller whenever the graphics card cannot keep up: autoscale.ts) */
+  scale?: number;
+  log?: (s: string) => void; trace?: number[]; skipStale?: boolean; ahead?: number;
+  /** the display's refresh rate (default 60): what counts as a slow frame depends on it */
+  displayHz?: number;
+  /** the largest automatic scale (default 4): what an earlier game came down to */
+  autoCap?: number;
+  /** the automatic scale came down to `cap` */
+  onAutoCap?: (cap: number) => void;
+}
 
 export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, opts: GlideOptions = {}): Promise<GlideRenderer> {
   const log = opts.log ?? console.log;
@@ -281,16 +312,18 @@ export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, 
   const dropTexGroups = (id: number) => { for (const k of [...texGroups.keys()]) if (k.startsWith(`${id}:`)) texGroups.delete(k); };
 
   // ---- render target: the game's frame buffer at `scale` times its resolution
+  let cap = Math.max(1, Math.min(4, opts.autoCap ?? 4));
+  let capBefore = cap;
   let gw = 0, gh = 0, scale = 1, color: GPUTexture | null = null, depth: GPUTexture | null = null, presentGroup: GPUBindGroup | null = null;
   const linear = device.createSampler({ minFilter: 'linear', magFilter: 'linear' });
   const presentPipe = device.createRenderPipeline({ layout: 'auto', label: 'present',
     vertex: { module: mPresent, entryPoint: 'vs' }, fragment: { module: mPresent, entryPoint: 'fs', targets: [{ format }] } });
   const ensureTarget = (w: number, h: number) => {
-    const want = opts.scale ?? Math.max(1, Math.min(4, Math.round((canvas.clientHeight * devicePixelRatio) / h) || 1));
+    const want = opts.scale ?? Math.max(1, Math.min(cap, Math.round((canvas.clientHeight * devicePixelRatio) / h) || 1));
     if (color && w === gw && h === gh && want === scale) return;
     gw = w; gh = h; scale = want;
     color?.destroy(); depth?.destroy();
-    color = device.createTexture({ size: [w * scale, h * scale], format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
+    color = device.createTexture({ size: [w * scale, h * scale], format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC });
     depth = device.createTexture({ size: [w * scale, h * scale], format: 'depth32float', usage: GPUTextureUsage.RENDER_ATTACHMENT });
     presentGroup = device.createBindGroup({ layout: presentPipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: color.createView() }, { binding: 1, resource: linear }] });
     first = true;
@@ -337,8 +370,45 @@ export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, 
     depthStencil: { format: 'depth32float', depthWriteEnabled: false, depthCompare: 'always' } });
 
   // ---- one frame
-  let frames = 0, drawsLast = 0, vertsLast = 0;
+  let frames = 0, skipped = 0, drawsLast = 0, vertsLast = 0;
   const later: GPUTexture[] = [];
+  /** the frame begins by clearing the whole picture, colour and depth: nothing drawn before it shows or counts */
+  function startsFresh(f: number): boolean {
+    const buf = proc.memory.buffer as unknown as ArrayBuffer, c = ctl();
+    const base = c[C_SLOT + (f % PG_NSLOT)], hd = new Uint32Array(buf, base, 4);
+    if (hd[0] !== f) return false;
+    const cmds = new Uint32Array(buf, base + PG_CMD_OFF, hd[2] >> 2), w = c[C_W] || 640, h = c[C_H] || 480;
+    for (let p = 0, k = 0; k < hd[1] && p < cmds.length; k++) {
+      const op = cmds[p], a = p + 2;
+      if (op === OP_CLEAR) return cmds[a] <= 0 && cmds[a + 1] <= 0 && cmds[a + 2] >= w && cmds[a + 3] >= h && !!cmds[a + 7] && !!cmds[a + 8];
+      if (op === OP_DRAW || op === OP_LFB) return false;
+      p += cmds[p + 1] >> 2;
+    }
+    return false;
+  }
+  /** a frame nobody will see: its textures are taken (later frames draw with them), nothing is drawn */
+  function takeFrame(f: number) {
+    const buf = proc.memory.buffer as unknown as ArrayBuffer, c = ctl();
+    const base = c[C_SLOT + (f % PG_NSLOT)], hd = new Uint32Array(buf, base, 4);
+    if (hd[0] !== f) { log(`[glide-gpu] frame ${f}: the packet says ${hd[0]}`); return; }
+    const cmds = new Uint32Array(buf, base + PG_CMD_OFF, hd[2] >> 2);
+    for (let p = 0, k = 0; k < hd[1] && p < cmds.length; k++) {
+      const op = cmds[p], a = p + 2;
+      if (op === OP_TEXNEW) {
+        const id = cmds[a], w = cmds[a + 1], h = cmds[a + 2], px = cmds[a + 3];
+        const old = textures.get(id); if (old) later.push(old);
+        const t = device.createTexture({ size: [w, h], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+        device.queue.writeTexture({ texture: t }, buf, { offset: px, bytesPerRow: w * 4, rowsPerImage: h }, [w, h]);
+        textures.set(id, t); dropTexGroups(id);
+      } else if (op === OP_TEXFREE) {
+        const id = cmds[a], t = textures.get(id);
+        if (t) { later.push(t); textures.delete(id); dropTexGroups(id); }
+      }
+      p += cmds[p + 1] >> 2;
+    }
+    for (const t of later.splice(0)) t.destroy();
+    frames++; skipped++;
+  }
   function drawFrame(f: number) {
     const buf = proc.memory.buffer as unknown as ArrayBuffer;
     const c = ctl();
@@ -443,14 +513,32 @@ export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, 
   ro.observe(canvas);
 
   // ---- every frame the game publishes, in order (each may upload textures), at most a few per animation frame
-  let done = 0, running = true;
+  let done = 0, running = true, skip = opts.skipStale ?? true;
+  const gov = new ScaleGovernor(opts.displayHz ?? 60);
+  let lastDrawn = 0;
+  Atomics.store(ctlI(), C_AHEAD, opts.ahead ?? 0);
   Atomics.store(ctlI(), C_ATTACHED, 1); Atomics.notify(ctlI(), C_ATTACHED);
-  const tick = () => {
+  const tick = (now: number) => {
     if (!running) return;
     const ready = Atomics.load(ctlI(), C_READY);
+    // the automatic scale: frames of the game that come far apart say the card may be behind; a step down that
+    // does not bring them closer is taken back (autoscale.ts)
+    if (done < ready && opts.scale === undefined && !document.hidden) {
+      const v = lastDrawn ? gov.sample(now - lastDrawn) : null;
+      lastDrawn = now;
+      if (v === 'lower') {
+        if (scale > 1) { capBefore = cap; cap = scale - 1; log(`[glide-gpu] the frames come slowly at ${scale}x: trying the picture at ${cap}x`); }
+        else gov.reset();                     // nothing smaller to try
+      } else if (v === 'keep') { log(`[glide-gpu] ${cap}x brought them closer (the graphics card was behind): the picture stays there`); opts.onAutoCap?.(cap); }
+      else if (v === 'undo') { log(`[glide-gpu] ${cap}x brought them no closer (it is not the graphics card): back to ${capBefore}x`); cap = capBefore; }
+    }
     for (let n = 0; done < ready && n < PG_NSLOT; n++) {
       const f = done + 1;
-      try { drawFrame(f); } catch (e) { if (errors++ < 20) log(`[glide-gpu] frame ${f}: ${e}`); }
+      // several frames wait (the game ran ahead of the display): only the newest is seen.  An older one is still
+      // drawn when the next builds on its picture; when the next starts by clearing everything, drawing it would
+      // only hold the display up (each batch then takes longer, more frames wait, and the picture stays behind).
+      const stale = skip && f < ready && n + 1 < PG_NSLOT && !traceFrames.has(f) && startsFresh(f + 1);
+      try { if (stale) takeFrame(f); else drawFrame(f); } catch (e) { if (errors++ < 20) log(`[glide-gpu] frame ${f}: ${e}`); }
       done = f;
       Atomics.store(ctlI(), C_DONE, f); Atomics.notify(ctlI(), C_DONE);
     }
@@ -459,7 +547,28 @@ export async function attachGlide(proc: GameProcess, canvas: HTMLCanvasElement, 
   requestAnimationFrame(tick);
   log(`[glide-gpu] attached: ${format} canvas, adapter ${(adapter as any).info?.description || (adapter as any).info?.vendor || ''}`);
   return {
-    stats: () => ({ frames, drawsLast, vertsLast, textures: textures.size, pipelines: pipes.size, errors }),
+    stats: () => ({ frames, skipped, scale, drawsLast, vertsLast, textures: textures.size, pipelines: pipes.size, errors }),
+    skipStale(on) { skip = on; },
+    ahead(n) { Atomics.store(ctlI(), C_AHEAD, Math.max(0, Math.min(PG_NSLOT - 1, n | 0))); },
+    scale(n) { opts.scale = n; gov.reset(); },
+    async shot() {
+      if (!color || !gw || !gh) return null;
+      const w = gw * scale, h = gh * scale, row = Math.ceil(w * 4 / 256) * 256;   // rows of a copy are 256-byte aligned
+      const buf = device.createBuffer({ size: row * h, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+      try {
+        const enc = device.createCommandEncoder();
+        enc.copyTextureToBuffer({ texture: color }, { buffer: buf, bytesPerRow: row }, [w, h]);
+        device.queue.submit([enc.finish()]);
+        await buf.mapAsync(GPUMapMode.READ);
+        const src = new Uint8Array(buf.getMappedRange()), img = new ImageData(w, h);
+        for (let y = 0; y < h; y++) img.data.set(src.subarray(y * row, y * row + w * 4), y * w * 4);
+        for (let i = 3; i < img.data.length; i += 4) img.data[i] = 255;           // the target's alpha is the game's own business
+        buf.unmap();
+        const c = new OffscreenCanvas(w, h);
+        c.getContext('2d')!.putImageData(img, 0, 0);
+        return await c.convertToBlob({ type: 'image/png' });
+      } finally { buf.destroy(); }
+    },
     detach: () => { running = false; Atomics.store(ctlI(), C_ATTACHED, 0); Atomics.notify(ctlI(), C_ATTACHED); ro.disconnect(); },
   };
 }

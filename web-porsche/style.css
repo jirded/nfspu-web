@@ -1,0 +1,143 @@
+/* Porsche Unleashed start page: the "garage" look, after the game's own main menu: a dark concrete
+   garage under cold tube light, the menu's thin targeting lines, its red glossy bars for what is chosen,
+   lowercase light headings, and the gold RACE for Play.  Everything is drawn here; there are no images. */
+:root {
+  --bg-0: #171a17; --bg-1: #2b322c; --bg-2: #1c211d;
+  --panel: rgba(10, 12, 10, .62); --edge: rgba(255, 255, 255, .14);
+  --text: #d9dcd6; --mute: #aab0a8; --dim: #7d837b;
+  --red-0: #e0303a; --red-1: #a80f18; --red-2: #7c0a10; --red-edge: #e4636a;
+  --gold: #c9a227; --gold-edge: #4a3d16;
+  --line: rgba(255, 255, 255, .22);
+  --field: #1a1d1a; --field-edge: #3a3d39;
+  --red-bar: linear-gradient(180deg, var(--red-0) 0, var(--red-1) 55%, var(--red-2) 100%);
+}
+html { color-scheme: dark; height: 100%; }
+body { margin: 0; min-height: 100%; color: var(--text); font: 14px/1.45 'Segoe UI', 'Trebuchet MS', sans-serif;
+  background: linear-gradient(180deg, var(--bg-2) 0, var(--bg-1) 45%, var(--bg-0) 100%) fixed var(--bg-0); }
+[hidden] { display: none !important; }
+* { box-sizing: border-box; }
+h1, h2, h3, p { margin: 0; }
+a { color: var(--text); text-decoration-color: var(--red-edge); text-underline-offset: 3px; }
+a:hover { color: #fff; }
+:focus-visible { outline: 2px solid var(--red-edge); outline-offset: 2px; }
+
+/* ---- the start page */
+#start { position: relative; min-height: 100vh; overflow: hidden; }
+/* the menu's targeting cross and the dark circle behind it */
+#start::before { content: ''; position: absolute; inset: 0; pointer-events: none;
+  background:
+    linear-gradient(var(--line), var(--line)) 0 62% / 100% 1px no-repeat,
+    linear-gradient(var(--line), var(--line)) 60% 0 / 1px 100% no-repeat,
+    radial-gradient(ellipse min(30vw, 400px) min(34vh, 250px) at 60% 62%, rgba(0, 0, 0, .5) 0, rgba(0, 0, 0, .5) 99%, transparent 100%); }
+.wrap { position: relative; max-width: 1040px; margin: 0 auto; padding: 22px 24px 48px; }
+.top { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; padding-bottom: 12px; margin-bottom: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, .18); box-shadow: 0 4px 0 -1px rgba(190, 200, 255, .12); }   /* the tube light */
+h1 { font-size: 30px; font-weight: 300; letter-spacing: 1px; text-transform: lowercase; color: var(--mute); line-height: 1.1; }
+.sub { font-size: 12px; color: var(--dim); margin-top: 2px; }
+.cols { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 16px; align-items: start; }
+.left { display: flex; flex-direction: column; gap: 16px; }
+@media (max-width: 760px) { .cols { grid-template-columns: 1fr; } }
+
+.panel { background: var(--panel); border: 1px solid var(--edge); padding: 16px 18px; }
+h2, h3 { font-weight: 300; text-transform: lowercase; color: var(--mute); }
+h2 { font-size: 20px; }
+h3 { font-size: 16px; margin: 18px 0 2px; }
+h3:first-child { margin-top: 0; }
+.panel p { font-size: 13px; margin-top: 8px; }
+.note { font-size: 12px; color: var(--dim); margin-top: 8px; }
+.problem, .warn { color: #f0b4b8; }
+
+/* ---- Play */
+.play-state { font-size: 24px; color: var(--text); }
+#play-card[data-state=problem] .play-state { color: #f0b4b8; }
+.play-detail { min-height: 2.9em; }
+.play-code { font: 11px/1.2 ui-monospace, Consolas, monospace; color: var(--dim); letter-spacing: 1px; }
+.btn-race { display: block; width: 100%; margin-top: 14px; padding: 11px 10px; cursor: pointer;
+  background: #0d0e0c; border: 1px solid var(--gold-edge); color: var(--gold);
+  font: 700 16px/1 'Segoe UI', 'Trebuchet MS', sans-serif; letter-spacing: 3px; text-transform: uppercase; }
+.btn-race:hover:not(:disabled) { border-color: var(--gold); background: #141510; }
+.btn-race:disabled { opacity: .4; cursor: default; }
+.btn-race kbd { margin-left: 8px; letter-spacing: 0; text-transform: none; font-weight: 400; color: var(--dim); border-color: var(--gold-edge); }
+#play-extra { margin-top: 10px; width: 100%; }
+
+/* ---- buttons, fields */
+.btn { background: var(--field); border: 1px solid var(--field-edge); color: var(--text); padding: 5px 14px; cursor: pointer;
+  font: inherit; font-size: 13px; text-transform: lowercase; }
+.btn:hover:not(:disabled) { border-color: var(--mute); color: #fff; }
+.btn:disabled { opacity: .4; cursor: default; }
+.btn.red { background: var(--red-bar); border-color: var(--red-edge); color: #fff; text-shadow: 0 1px 0 #500; }
+.btn.small { padding: 2px 8px; font-size: 12px; }
+kbd { display: inline-block; min-width: 1.9em; padding: 1px 6px; text-align: center; background: #0d0e0c; border: 1px solid var(--field-edge);
+  font: 12px/1.5 'Segoe UI', sans-serif; color: var(--text); }
+textarea, input[type=text] { width: 100%; background: #0d0e0c; border: 1px solid var(--field-edge); color: var(--text);
+  font: 12px/1.4 ui-monospace, Consolas, monospace; padding: 8px; }
+
+/* ---- tabs: the chosen one is the menu's red bar */
+.tabs { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.tab { background: var(--field); border: 1px solid #333; color: #c9cdc6; padding: 3px 16px 4px; cursor: pointer;
+  font: inherit; font-size: 14px; text-transform: lowercase; }
+.tab:hover { color: #fff; border-color: var(--mute); }
+.tab[aria-selected=true] { background: var(--red-bar); border-color: var(--red-edge); color: #fff; text-shadow: 0 1px 0 #500; }
+.tabs.sub { margin: 0 0 10px; gap: 8px; }
+.tabs.sub .tab { font-size: 12px; padding: 2px 12px 3px; }
+
+/* ---- rows of settings */
+.row { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 10px 0; border-top: 1px solid rgba(255, 255, 255, .1); }
+.row .what { min-width: 0; }
+.row .what b { font-weight: 600; display: block; }
+.row .what small { display: block; font-size: 12px; color: var(--dim); }
+.row .ctl { display: flex; align-items: center; gap: 8px; flex: none; }
+.seg { display: inline-flex; }
+.seg button { background: var(--field); border: 1px solid var(--field-edge); margin-left: -1px; color: #c9cdc6; padding: 4px 11px; cursor: pointer; font: inherit; font-size: 12px; }
+.seg button:first-child { margin-left: 0; }
+.seg button[aria-pressed=true] { background: var(--red-bar); border-color: var(--red-edge); color: #fff; text-shadow: 0 1px 0 #500; position: relative; }
+.seg button:disabled, .switch:disabled { opacity: .45; cursor: default; }
+.switch { position: relative; width: 40px; height: 21px; border-radius: 11px; border: 1px solid var(--field-edge); background: var(--field); cursor: pointer; padding: 0; }
+.switch::after { content: ''; position: absolute; top: 3px; left: 3px; width: 13px; height: 13px; border-radius: 50%; background: var(--dim); transition: left .12s; }
+.switch[aria-checked=true] { background: var(--red-1); border-color: var(--red-edge); }
+.switch[aria-checked=true]::after { left: 22px; background: #fff; }
+details.more { border-top: 1px solid rgba(255, 255, 255, .1); }
+details.more > summary { cursor: pointer; padding: 9px 0; font-size: 12px; color: var(--mute); text-transform: lowercase; }
+.actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+.spread { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+
+/* ---- saves */
+.list { list-style: none; margin: 8px 0 0; padding: 0; }
+.list li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 7px 10px; background: rgba(0, 0, 0, .35); border: 1px solid rgba(255, 255, 255, .08); margin-top: 6px; }
+.list li b { font-weight: 600; letter-spacing: .5px; }
+.list li .when { color: var(--dim); font-size: 12px; margin-left: auto; }
+.shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; margin-top: 8px; }
+.shots button { padding: 0; border: 1px solid var(--field-edge); background: #000; cursor: pointer; aspect-ratio: 4 / 3; overflow: hidden; }
+.shots button:hover { border-color: var(--mute); }
+.shots img, #shot-large { display: block; width: 100%; height: 100%; object-fit: cover; }
+#shot-large { height: auto; max-height: 70vh; object-fit: contain; background: #000; }
+
+/* ---- controls */
+table.keys { border-collapse: collapse; width: 100%; }
+table.keys td { padding: 6px 0; border-top: 1px solid rgba(255, 255, 255, .1); vertical-align: middle; font-size: 13px; }
+table.keys td:first-child { white-space: nowrap; padding-right: 16px; width: 1%; }
+table.keys kbd + kbd { margin-left: 4px; }
+
+/* ---- dialogs */
+dialog { background: #121512; color: var(--text); border: 1px solid var(--edge); padding: 18px 20px; max-width: min(560px, 92vw); }
+dialog.wide { max-width: min(900px, 94vw); width: 900px; }
+dialog::backdrop { background: rgba(0, 0, 0, .6); }
+dialog p { margin-top: 10px; font-size: 13px; }
+dialog ul { margin: 8px 0 0; padding-left: 18px; font-size: 13px; }
+#log { margin: 10px 0 0; max-height: 60vh; overflow: auto; white-space: pre-wrap; background: #000; color: #9fd29f; padding: 8px; font: 12px/1.35 ui-monospace, Consolas, monospace; }
+#menu { min-width: 300px; }
+#menu .item { display: flex; justify-content: space-between; gap: 18px; width: 100%; margin-top: 6px; padding: 7px 12px; text-align: left;
+  background: var(--field); border: 1px solid var(--field-edge); color: var(--text); cursor: pointer; font: inherit; text-transform: lowercase; }
+#menu .item:hover, #menu .item:focus-visible { background: var(--red-bar); border-color: var(--red-edge); color: #fff; outline: none; }
+#menu .item span { color: var(--dim); text-transform: none; }
+#menu .item:hover span, #menu .item:focus-visible span { color: #fff; }
+
+/* ---- the game */
+#stage { display: none; position: fixed; inset: 0; background: #000; align-items: center; justify-content: center; }
+body.playing #stage { display: flex; }
+body.playing #start { display: none; }
+#screen { background: #000; max-width: 100%; max-height: 100%; aspect-ratio: 4 / 3; height: 100%; outline: none; }
+#overlay { position: absolute; top: 8px; left: 8px; padding: 3px 8px; background: rgba(0, 0, 0, .6); color: #d9dcd6; pointer-events: none;
+  font: 12px/1.4 ui-monospace, Consolas, monospace; white-space: pre; }
+#toast { position: absolute; left: 50%; bottom: 8%; transform: translateX(-50%); padding: 6px 16px; background: rgba(0, 0, 0, .75);
+  border: 1px solid var(--edge); color: var(--text); pointer-events: none; }

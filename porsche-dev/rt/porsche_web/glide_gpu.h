@@ -8,6 +8,10 @@
  *   i32 done       the newest frame the page has drawn (the page writes it and notifies)
  *   u32 nslot, slot_bytes, slot[PG_NSLOT]   frame f lives in slot f % nslot
  *   i32 attached   1 while a page draws the frames (the game does not wait for a page that is not there)
+ *   i32 ahead      how many published frames the page may still have to draw when the game starts its next one
+ *                  (the page writes it; 0..PG_NSLOT-1).  0: the game waits for each frame to be drawn, so a frame
+ *                  is made from the input of the moment and shown at once.  More lets the game run ahead of a
+ *                  slow page, and every frame ahead is one more the player's input is late by.
  *
  * A frame's packet: a header, the commands from PG_CMD_OFF, the vertices
  * from PG_VERT_OFF (PG_VERT_FLOATS floats each).  Commands: u32 op, u32 size
@@ -30,6 +34,7 @@ typedef struct {
     uint32_t nslot, slot_bytes;
     uint32_t slot[PG_NSLOT];
     int32_t  attached;
+    int32_t  ahead;
 } PgCtl;
 
 typedef struct { uint32_t frame, ncmd, cmd_bytes, nvert; } PgHeader;

@@ -195,8 +195,11 @@ void glb_swap(void){
     ast(&g_ctl.ready, g_frame);
     __builtin_wasm_memory_atomic_notify((int *)&g_ctl.ready, 0xFFFFFFFFu);
     g_frames++;
-    /* the next frame's slot was frame (next - PG_NSLOT)'s: wait for the page to be done with it */
-    int32_t next = g_frame + 1, need = next - PG_NSLOT;
+    /* wait for the page: until it has drawn all but `ahead` of the frames published (glide_gpu.h).  At the most
+     * PG_NSLOT - 1, because the next frame's slot was frame (next - PG_NSLOT)'s and the page must be done with it. */
+    int32_t ahead = ald(&g_ctl.ahead);
+    if (ahead < 0) ahead = 0; else if (ahead > PG_NSLOT - 1) ahead = PG_NSLOT - 1;
+    int32_t next = g_frame + 1, need = g_frame - ahead;
     double t0 = now_ms(); int unlocked = 0;
     /* the page must see every frame (textures are uploaded once): at the start, wait for it to attach */
     static int waited_attach;
